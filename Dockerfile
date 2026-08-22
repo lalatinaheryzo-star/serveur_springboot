@@ -25,7 +25,7 @@ WORKDIR /app
 RUN addgroup -S spring && adduser -S spring -G spring
 USER spring
 
-COPY --from=build /app/target/backend-1.0.0.jar app.jar
+COPY --from=build /app/target/backend.jar app.jar
 
 # Render fournit dynamiquement la variable $PORT : on force Spring Boot
 # à écouter dessus, indépendamment de SERVER_PORT défini par ailleurs.
