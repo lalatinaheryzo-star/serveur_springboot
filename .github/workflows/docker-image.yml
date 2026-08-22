@@ -1,18 +1,48 @@
-name: Docker Image CI
+name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
 
 jobs:
-
-  build:
-
+  build-and-test:
+    name: Build & tests (Maven)
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Configurer JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build + tests
+        run: mvn -B clean verify
+
+      - name: Uploader le jar (artifact CI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jar
+          path: target/*.jar
+
+  # ------------------------------------------------------------------
+  # Optionnel : déclenche un déploiement Render dès que la CI passe
+  # sur main. Render redéploie déjà automatiquement à chaque push
+  # (autoDeploy: true dans render.yaml) si votre repo GitHub est
+  # connecté nativement à Render — dans ce cas ce job est redondant
+  # et peut être supprimé. Gardez-le seulement si vous préférez
+  # piloter le déploiement explicitement via un Deploy Hook.
+  # ------------------------------------------------------------------
+  deploy-render:
+    name: Déclencher le déploiement Render
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Appeler le Render Deploy Hook
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
