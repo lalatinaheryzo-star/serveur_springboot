@@ -32,7 +32,7 @@ public class CooperativeService {
     }
 
     public List<CooperativeDTO> findAll() {
-        return cooperativeRepository.findAll().stream().map(CooperativeService::toDto).toList();
+        return cooperativeRepository.findAllWithPresident().stream().map(CooperativeService::toDto).toList();
     }
 
     public Cooperative getEntity(UUID id) {

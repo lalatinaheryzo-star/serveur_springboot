@@ -93,7 +93,7 @@ public class PdfService {
 
                 // ── QR Code de vérification (même contenu que l'écran : verify_url) ──
                 float qrSize = 130;
-                BufferedImage qrImage = safeGenerateQr(r.getVerifyUrl(), 300);
+                BufferedImage qrImage = safeGenerateQr(r.getVerifyUrl(), 180);
                 if (qrImage != null) {
                     PDImageXObject qrObj = LosslessFactory.createFromImage(doc, qrImage);
                     cs.drawImage(qrObj, margin, y - qrSize, qrSize, qrSize);

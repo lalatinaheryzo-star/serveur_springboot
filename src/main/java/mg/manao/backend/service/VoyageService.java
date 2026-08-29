@@ -17,7 +17,9 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -30,6 +32,12 @@ public class VoyageService {
 
     public VoyageDTO toDto(Voyage v) {
         List<Place> places = placeRepository.findByVoyageIdOrderByNumeroPlaceAsc(v.getId());
+        return toDto(v, places);
+    }
+
+    /** Variante sans requête DB : utilisée par findAll() quand les places de TOUS les
+     *  voyages ont déjà été chargées en une seule requête groupée (voir findAll()). */
+    private VoyageDTO toDto(Voyage v, List<Place> places) {
         int total = places.isEmpty() ? v.getCapacite() : places.size();
         int dispo = places.isEmpty()
                 ? v.getCapacite()
@@ -54,7 +62,19 @@ public class VoyageService {
 
     @Transactional(readOnly = true)
     public List<VoyageDTO> findAll() {
-        return voyageRepository.findAllOrdered().stream().map(this::toDto).toList();
+        List<Voyage> voyages = voyageRepository.findAllOrdered();
+        if (voyages.isEmpty()) return List.of();
+
+        // Une seule requête pour les places de TOUS les voyages (au lieu d'une
+        // requête par voyage dans toDto()) : élimine le N+1 qui ralentissait
+        // cette liste, affichée sur les 3 espaces (Admin, Président, Voyageur).
+        List<UUID> ids = voyages.stream().map(Voyage::getId).toList();
+        Map<UUID, List<Place>> placesByVoyage = placeRepository.findByVoyageIdIn(ids).stream()
+                .collect(Collectors.groupingBy(p -> p.getVoyage().getId()));
+
+        return voyages.stream()
+                .map(v -> toDto(v, placesByVoyage.getOrDefault(v.getId(), List.of())))
+                .toList();
     }
 
     public Voyage getEntity(UUID id) {

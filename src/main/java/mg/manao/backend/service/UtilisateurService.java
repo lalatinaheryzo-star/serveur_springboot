@@ -65,6 +65,10 @@ public class UtilisateurService {
                 .telephone(req.getTelephone())
                 .motDePasse(passwordEncoder.encode(req.getPassword()))
                 .role(Utilisateur.Role.VOYAGEUR)
+                // Créé directement par un ADMIN (pas d'auto-inscription publique
+                // ici) : l'admin vérifie l'identité de la personne lui-même,
+                // pas besoin du double opt-in appliqué à /auth/register.
+                .emailVerifie(true)
                 .build();
         return toDto(utilisateurRepository.save(u));
     }

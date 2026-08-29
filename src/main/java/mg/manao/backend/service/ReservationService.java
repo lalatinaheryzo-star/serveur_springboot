@@ -134,12 +134,9 @@ public class ReservationService {
     }
 
     @Transactional
-    public ReservationDTO updateStatut(UUID id, UpdateReservationStatutRequest req, Cooperative coop) {
-        Reservation r = getEntity(id);
-        if (r.getVoyage() == null || r.getVoyage().getCooperative() == null
-                || !r.getVoyage().getCooperative().getId().equals(coop.getId())) {
-            throw ApiException.forbidden("Cette réservation n'appartient pas à votre coopérative.");
-        }
+    public ReservationDTO updateStatut(UUID id, UpdateReservationStatutRequest req, UUID presidentId) {
+        Reservation r = reservationRepository.findByIdForPresidentWithDetails(id, presidentId)
+                .orElseThrow(() -> ApiException.forbidden("Cette réservation n'appartient pas à votre coopérative."));
         String statut = req.getStatut();
         if (!List.of(Reservation.STATUT_EN_ATTENTE, Reservation.STATUT_VALIDEE,
                 Reservation.STATUT_REFUSEE, Reservation.STATUT_ANNULEE).contains(statut)) {
@@ -156,6 +153,12 @@ public class ReservationService {
         Reservation saved = reservationRepository.save(r);
 
         if (Reservation.STATUT_VALIDEE.equals(statut)) {
+            // On force le chargement des relations paresseuses (voyage, utilisateur)
+            // AVANT l'appel asynchrone : l'e-mail part sur un thread séparé, une
+            // fois cette transaction terminée, donc la session Hibernate ne sera
+            // plus ouverte pour résoudre un proxy lazy à ce moment-là.
+            if (saved.getVoyage() != null) saved.getVoyage().getVilleArrivee();
+            if (saved.getUtilisateur() != null) saved.getUtilisateur().getEmail();
             emailService.envoyerConfirmationReservation(saved);
         }
 

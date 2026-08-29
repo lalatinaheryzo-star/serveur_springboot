@@ -20,15 +20,18 @@ public class DashboardService {
 
     public DashboardStatsDTO getStats() {
         long totalReservations = reservationRepository.count();
-        long enAttente = reservationRepository.findByStatutOrderByDateReservationDesc(Reservation.STATUT_EN_ATTENTE).size();
-        long validees  = reservationRepository.findByStatutOrderByDateReservationDesc(Reservation.STATUT_VALIDEE).size();
-        long refusees   = reservationRepository.findByStatutOrderByDateReservationDesc(Reservation.STATUT_REFUSEE).size();
-        long annulees   = reservationRepository.findByStatutOrderByDateReservationDesc(Reservation.STATUT_ANNULEE).size();
+        // Avant : 4 requêtes chargeant CHAQUE réservation (+ voyage + utilisateur +
+        // place, avec le JOIN FETCH) juste pour appeler .size() dessus. Remplacé par
+        // 4 COUNT SQL légers : aucune ligne ni relation n'est transférée du tout.
+        long enAttente = reservationRepository.countByStatut(Reservation.STATUT_EN_ATTENTE);
+        long validees  = reservationRepository.countByStatut(Reservation.STATUT_VALIDEE);
+        long refusees   = reservationRepository.countByStatut(Reservation.STATUT_REFUSEE);
+        long annulees   = reservationRepository.countByStatut(Reservation.STATUT_ANNULEE);
 
-        BigDecimal revenuTotal = paiementRepository.findAllByOrderByDatePaiementDesc().stream()
-                .filter(p -> Paiement.STATUT_REUSSI.equals(p.getStatut()))
-                .map(Paiement::getMontant)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // Avant : chargeait TOUS les paiements en mémoire pour les additionner en
+        // Java. Remplacé par un SUM SQL (agrégation faite par la base, une seule
+        // valeur transférée).
+        BigDecimal revenuTotal = paiementRepository.sumMontantByStatut(Paiement.STATUT_REUSSI);
 
         return DashboardStatsDTO.builder()
                 .totalVoyages(voyageRepository.count())

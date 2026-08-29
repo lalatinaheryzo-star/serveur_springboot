@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.format.DateTimeFormatter;
@@ -43,11 +44,12 @@ public class EmailService {
         this.mailSender = mailSender;
     }
 
-    public boolean envoyerRappelVoyage(Reservation reservation) {
+    @Async("notificationExecutor")
+    public void envoyerRappelVoyage(Reservation reservation) {
         if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
             log.warn("Email non configuré (app.email.enabled=false ou GMAIL_USERNAME/GMAIL_APP_PASSWORD manquants) "
                     + "-> rappel non envoyé pour la réservation {}.", reservation.getId());
-            return false;
+            return;
         }
 
         Utilisateur voyageur = reservation.getUtilisateur();
@@ -57,7 +59,7 @@ public class EmailService {
         if (emailDestinataire == null || emailDestinataire.isBlank()) {
             log.warn("Adresse e-mail absente pour l'utilisateur {} -> rappel non envoyé (réservation {}).",
                     voyageur.getId(), reservation.getId());
-            return false;
+            return;
         }
 
         long minutesRestantes = java.time.Duration.between(
@@ -82,19 +84,18 @@ public class EmailService {
             message.setText(texte);
             mailSender.send(message);
             log.info("Rappel e-mail envoyé pour la réservation {} ({}).", reservation.getId(), emailDestinataire);
-            return true;
         } catch (Exception e) {
             log.error("Échec de l'envoi du rappel e-mail pour la réservation {} : {}",
                     reservation.getId(), e.getMessage());
-            return false;
         }
     }
 
-    public boolean envoyerConfirmationReservation(Reservation reservation) {
+    @Async("notificationExecutor")
+    public void envoyerConfirmationReservation(Reservation reservation) {
         if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
             log.warn("Email non configuré (app.email.enabled=false ou GMAIL_USERNAME/GMAIL_APP_PASSWORD manquants) "
                     + "-> confirmation non envoyée pour la réservation {}.", reservation.getId());
-            return false;
+            return;
         }
 
         Utilisateur voyageur = reservation.getUtilisateur();
@@ -104,7 +105,7 @@ public class EmailService {
         if (emailDestinataire == null || emailDestinataire.isBlank()) {
             log.warn("Adresse e-mail absente pour l'utilisateur {} -> confirmation non envoyée (réservation {}).",
                     voyageur.getId(), reservation.getId());
-            return false;
+            return;
         }
 
         String texte = String.format(
@@ -128,10 +129,49 @@ public class EmailService {
             message.setText(texte);
             mailSender.send(message);
             log.info("Confirmation e-mail envoyée pour la réservation {} ({}).", reservation.getId(), emailDestinataire);
-            return true;
         } catch (Exception e) {
             log.error("Échec de l'envoi de la confirmation e-mail pour la réservation {} : {}",
                     reservation.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * E-mail de vérification d'adresse (double opt-in — voir
+     * EmailVerificationService). Envoyé de façon SYNCHRONE (pas d'@Async) :
+     * contrairement aux rappels/confirmations de réservation, l'inscription
+     * doit pouvoir dire tout de suite à l'utilisateur "vérifiez votre
+     * boîte" plutôt que de répondre avec succès avant même de savoir si
+     * l'envoi a marché.
+     *
+     * @return true si l'e-mail a été transmis avec succès au serveur SMTP.
+     */
+    public boolean envoyerCodeVerification(String destinataire, String prenom, String code, String lienVerification) {
+        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
+            log.warn("Email non configuré (app.email.enabled=false ou GMAIL_USERNAME/GMAIL_APP_PASSWORD manquants) "
+                    + "-> code de vérification non envoyé à {}.", destinataire);
+            return false;
+        }
+        String texte = String.format(
+                "Bonjour %s,%n%n"
+                + "Merci de votre inscription ! Pour confirmer que cette adresse e-mail vous appartient bien, "
+                + "utilisez le code suivant :%n%n"
+                + "    %s%n%n"
+                + "Vous pouvez aussi cliquer directement sur ce lien :%n%s%n%n"
+                + "Ce code est valable 30 minutes. Si vous n'êtes pas à l'origine de cette inscription, "
+                + "ignorez simplement cet e-mail.",
+                nvl(prenom), code, lienVerification
+        );
+        try {
+            SimpleMailMessage message = new SimpleMailMessage();
+            message.setFrom(from == null || from.isBlank() ? username : from);
+            message.setTo(destinataire);
+            message.setSubject("Confirmez votre adresse e-mail");
+            message.setText(texte);
+            mailSender.send(message);
+            log.info("E-mail de vérification envoyé à {}.", destinataire);
+            return true;
+        } catch (Exception e) {
+            log.error("Échec de l'envoi de l'e-mail de vérification à {} : {}", destinataire, e.getMessage());
             return false;
         }
     }

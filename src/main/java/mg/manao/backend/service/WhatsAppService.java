@@ -10,9 +10,11 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.time.Duration;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -53,7 +55,12 @@ public class WhatsAppService {
     @Value("${app.evolution.default-country-code:261}")
     private String defaultCountryCode;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    // RestTemplate par défaut = timeouts infinis : un Evolution API injoignable
+    // bloquerait le thread du scheduler indéfiniment. On borne à 5 s.
+    private final RestTemplate restTemplate = new RestTemplateBuilder()
+            .setConnectTimeout(Duration.ofSeconds(5))
+            .setReadTimeout(Duration.ofSeconds(5))
+            .build();
 
     public boolean envoyerRappelVoyage(Reservation reservation) {
         if (!enabled || apiUrl == null || apiUrl.isBlank() || apiKey == null || apiKey.isBlank()

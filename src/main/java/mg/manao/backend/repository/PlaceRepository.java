@@ -13,6 +13,13 @@ public interface PlaceRepository extends JpaRepository<Place, UUID> {
 
     List<Place> findByVoyageIdOrderByNumeroPlaceAsc(UUID voyageId);
 
+    // Utilisé par VoyageService.findAll() : récupère en UNE requête les places
+    // de TOUS les voyages de la liste, au lieu d'une requête par voyage
+    // (l'ancienne implémentation appelait findByVoyageIdOrderByNumeroPlaceAsc
+    // dans une boucle -> N+1 : 50 voyages = 51 requêtes SQL pour afficher une
+    // simple liste). Le regroupement par voyage se fait ensuite en mémoire.
+    List<Place> findByVoyageIdIn(List<UUID> voyageIds);
+
     Optional<Place> findByVoyageIdAndNumeroPlace(UUID voyageId, Integer numeroPlace);
 
     long countByVoyageIdAndStatut(UUID voyageId, String statut);

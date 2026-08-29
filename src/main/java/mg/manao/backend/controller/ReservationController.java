@@ -93,8 +93,10 @@ public class ReservationController {
     public ReservationDTO updateStatut(@PathVariable UUID id, @Valid @RequestBody UpdateReservationStatutRequest req) {
         SecurityUserDetails current = CurrentUser.get();
         if (current == null) throw ApiException.unauthorized("Non authentifié.");
-        Cooperative coop = cooperativeService.getEntityForPresident(current.getId());
-        return reservationService.updateStatut(id, req, coop);
+        // Une seule requête JOINED côté réservation suffit maintenant à vérifier
+        // la propriété de la coopérative, charger les relations nécessaires et
+        // préparer la réponse. On supprime ainsi plusieurs aller-retours DB.
+        return reservationService.updateStatut(id, req, current.getId());
     }
 
     /** ADMIN uniquement (voir SecurityConfig). */

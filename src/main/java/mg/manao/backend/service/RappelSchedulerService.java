@@ -39,6 +39,10 @@ public class RappelSchedulerService {
                 r.setRappelEnvoyeAt(OffsetDateTime.now());
                 reservationRepository.save(r);
 
+                // Idem que pour la confirmation de réservation : on force le
+                // chargement de l'utilisateur avant l'appel @Async (le voyage est
+                // déjà initialisé via r.getVoyage().getCooperative() ci-dessus).
+                if (r.getUtilisateur() != null) r.getUtilisateur().getEmail();
                 emailService.envoyerRappelVoyage(r);
             } catch (Exception e) {
                 log.error("Erreur lors du traitement du rappel pour la réservation {} : {}", r.getId(), e.getMessage());

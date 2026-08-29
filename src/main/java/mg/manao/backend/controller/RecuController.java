@@ -35,14 +35,17 @@ public class RecuController {
     @GetMapping("/{id}")
     public RecuDTO findById(@PathVariable UUID id) {
         RecuDTO dto = recuService.findById(id);
-        assertOwnerOrAdmin(dto.getReservationId());
+        assertOwnerOrAdmin(dto);
         return dto;
     }
 
     @GetMapping("/reservation/{reservationId}")
     public RecuDTO findByReservation(@PathVariable UUID reservationId) {
-        assertOwnerOrAdmin(reservationId.toString());
-        return recuService.findByReservation(reservationId);
+        // La requête du service charge déjà reçu + paiement + réservation +
+        // voyage + coopérative + voyageur en une seule lecture SQL.
+        RecuDTO dto = recuService.findByReservation(reservationId);
+        assertOwnerOrAdmin(dto);
+        return dto;
     }
 
     @PostMapping
@@ -57,9 +60,11 @@ public class RecuController {
 
     @GetMapping("/{id}/download")
     public ResponseEntity<byte[]> download(@PathVariable UUID id) {
+        // Une seule lecture optimisée du reçu est nécessaire. Le PDF est ensuite
+        // généré directement depuis le DTO déjà chargé.
         RecuDTO dto = recuService.findById(id);
-        assertOwnerOrAdmin(dto.getReservationId());
-        byte[] pdf = recuService.downloadPdf(id);
+        assertOwnerOrAdmin(dto);
+        byte[] pdf = recuService.generatePdf(dto);
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_PDF)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + dto.getNumeroRecu() + ".pdf\"")
@@ -87,18 +92,19 @@ public class RecuController {
         return recuService.checkin(token, req != null ? req : new RecuIO.CheckinRequest());
     }
 
-    private void assertOwnerOrAdmin(String reservationId) {
+    private void assertOwnerOrAdmin(RecuDTO dto) {
         SecurityUserDetails current = CurrentUser.get();
         if (current == null) throw ApiException.unauthorized("Non authentifié.");
         if (current.getRole() == Utilisateur.Role.ADMIN) return;
-        var reservation = reservationService.getEntity(UUID.fromString(reservationId));
+
         if (current.getRole() == Utilisateur.Role.PRESIDENT
-                && reservation.getVoyage() != null && reservation.getVoyage().getCooperative() != null
-                && reservation.getVoyage().getCooperative().getPresident() != null
-                && reservation.getVoyage().getCooperative().getPresident().getId().equals(current.getId())) {
+                && dto.getCooperativePresidentIdInterne() != null
+                && dto.getCooperativePresidentIdInterne().equals(current.getId().toString())) {
             return;
         }
-        if (!reservation.getUtilisateur().getId().equals(current.getId())) {
+
+        if (dto.getUtilisateurIdInterne() == null
+                || !dto.getUtilisateurIdInterne().equals(current.getId().toString())) {
             throw ApiException.forbidden("Accès refusé à ce reçu.");
         }
     }

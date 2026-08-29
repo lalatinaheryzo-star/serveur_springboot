@@ -67,6 +67,11 @@ public class RecuService {
                 .dateGeneration(recu.getDateGeneration())
                 .checkedAt(recu.getCheckedAt())
                 .checkedBy(recu.getCheckedBy())
+                .utilisateurIdInterne(u != null ? u.getId().toString() : null)
+                .cooperativePresidentIdInterne(
+                        v != null && v.getCooperative() != null && v.getCooperative().getPresident() != null
+                                ? v.getCooperative().getPresident().getId().toString()
+                                : null)
                 .build();
     }
 
@@ -76,7 +81,8 @@ public class RecuService {
     }
 
     public Recu getEntity(UUID id) {
-        return recuRepository.findById(id).orElseThrow(() -> ApiException.notFound("Reçu introuvable."));
+        return recuRepository.findByIdWithDetails(id)
+                .orElseThrow(() -> ApiException.notFound("Reçu introuvable."));
     }
 
     @Transactional(readOnly = true)
@@ -86,9 +92,9 @@ public class RecuService {
 
     @Transactional
     public RecuDTO findByReservation(UUID reservationId) {
-        Recu recu = recuRepository.findByPaiementReservationId(reservationId)
+        Recu recu = recuRepository.findByReservationIdWithDetails(reservationId)
                 .orElseGet(() -> {
-                    Paiement paiement = paiementRepository.findByReservationId(reservationId)
+                    Paiement paiement = paiementRepository.findByReservationIdWithDetails(reservationId)
                             .filter(p -> Paiement.STATUT_REUSSI.equals(p.getStatut()))
                             .orElseThrow(() -> ApiException.notFound("Aucun reçu pour cette réservation."));
                     return ensureRecuForPaiement(paiement);
@@ -133,7 +139,7 @@ public class RecuService {
 
     /** Page publique /verify/:token — scannée par un agent de gare, sans authentification. */
     public RecuIO.VerifyResponse verifyByToken(String token) {
-        Recu recu = recuRepository.findByToken(token)
+        Recu recu = recuRepository.findByTokenWithDetails(token)
                 .orElseThrow(() -> ApiException.notFound("Reçu introuvable ou lien invalide."));
         boolean alreadyUsed = recu.getCheckedAt() != null;
         return RecuIO.VerifyResponse.builder()
@@ -144,7 +150,7 @@ public class RecuService {
 
     @Transactional
     public RecuIO.CheckinResponse checkin(String token, RecuIO.CheckinRequest req) {
-        Recu recu = recuRepository.findByToken(token)
+        Recu recu = recuRepository.findByTokenWithDetails(token)
                 .orElseThrow(() -> ApiException.notFound("Reçu introuvable ou lien invalide."));
 
         if (recu.getCheckedAt() != null) {
@@ -170,7 +176,12 @@ public class RecuService {
 
     @Transactional(readOnly = true)
     public byte[] downloadPdf(UUID id) {
-        return pdfService.generateRecuPdf(toDto(getEntity(id)));
+        return generatePdf(findById(id));
+    }
+
+    @Transactional(readOnly = true)
+    public byte[] generatePdf(RecuDTO dto) {
+        return pdfService.generateRecuPdf(dto);
     }
 
     /**

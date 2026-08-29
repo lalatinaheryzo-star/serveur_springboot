@@ -1,5 +1,6 @@
 package mg.manao.backend.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -88,4 +89,12 @@ public class RecuDTO {
 
     @JsonProperty("checked_by")
     private String checkedBy;
+
+    // Champs techniques utilisés uniquement pour l'autorisation du contrôleur.
+    // Ils ne sont jamais sérialisés dans la réponse JSON.
+    @JsonIgnore
+    private String utilisateurIdInterne;
+
+    @JsonIgnore
+    private String cooperativePresidentIdInterne;
 }
