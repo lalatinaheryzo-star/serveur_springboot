@@ -177,8 +177,6 @@ public class EmailService {
     }
 
     private String nvl(String s) { return s == null ? "-" : s; }
-<<<<<<< HEAD
-=======
 
     /**
      * "Mot de passe oublié" (Président / Voyageur uniquement — jamais ADMIN,
@@ -216,5 +214,4 @@ public class EmailService {
             return false;
         }
     }
->>>>>>> 6efaa14 (Backend Update)
 }

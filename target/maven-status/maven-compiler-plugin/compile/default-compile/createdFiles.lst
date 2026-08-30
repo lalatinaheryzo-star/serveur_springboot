@@ -1,6 +1,7 @@
 mg\manao\backend\dto\CooperativeDTO$CooperativeDTOBuilder.class
 mg\manao\backend\service\RecuService.class
 mg\manao\backend\service\AuthService.class
+mg\manao\backend\service\EmailVerificationService.class
 mg\manao\backend\dto\ReservationDTO.class
 mg\manao\backend\entity\Cooperative.class
 mg\manao\backend\dto\UpdateReservationStatutRequest.class
@@ -22,14 +23,16 @@ mg\manao\backend\service\PdfService.class
 mg\manao\backend\config\SecurityConfig.class
 mg\manao\backend\controller\NotificationController.class
 mg\manao\backend\repository\VoyageRepository.class
+mg\manao\backend\service\EmailExistenceValidator.class
 mg\manao\backend\controller\ReservationController.class
 mg\manao\backend\service\PlaceService.class
 mg\manao\backend\dto\UtilisateurDTO$UtilisateurDTOBuilder.class
 mg\manao\backend\service\NotificationService.class
 mg\manao\backend\repository\NotificationRepository.class
 mg\manao\backend\dto\PlaceDTO$PlaceDTOBuilder.class
+mg\manao\backend\config\AdminSeeder.class
+mg\manao\backend\controller\AuthController$ForgotPasswordRequest.class
 mg\manao\backend\repository\PlaceRepository.class
-mg\manao\backend\config\DataSeeder.class
 mg\manao\backend\controller\CooperativeController.class
 mg\manao\backend\dto\UpdatePaiementStatutRequest.class
 mg\manao\backend\entity\Paiement.class
@@ -48,6 +51,7 @@ mg\manao\backend\service\CooperativeService.class
 mg\manao\backend\entity\DemandeCooperative$DemandeCooperativeBuilder.class
 mg\manao\backend\dto\auth\RegisterRequest.class
 mg\manao\backend\dto\RecuIO$CheckinResponse.class
+mg\manao\backend\config\AsyncConfig.class
 mg\manao\backend\dto\auth\LoginRequest.class
 mg\manao\backend\dto\RecuIO.class
 mg\manao\backend\dto\NotificationIO.class
@@ -101,6 +105,7 @@ mg\manao\backend\entity\Utilisateur$Role.class
 mg\manao\backend\controller\RecuController.class
 mg\manao\backend\security\JwtAuthFilter.class
 mg\manao\backend\config\ApplicationProperties$Cors.class
+mg\manao\backend\controller\AuthController$ResendVerificationRequest.class
 mg\manao\backend\entity\Notification$NotificationBuilder.class
 mg\manao\backend\repository\PaiementRepository.class
 mg\manao\backend\dto\CooperativeDTO.class
@@ -108,6 +113,7 @@ mg\manao\backend\service\EmailService.class
 mg\manao\backend\service\ReservationService.class
 mg\manao\backend\dto\DemandeCooperativeIO$RejectRequest.class
 mg\manao\backend\controller\VoyageController.class
+mg\manao\backend\controller\AuthController$VerifyEmailRequest.class
 mg\manao\backend\entity\Cooperative$CooperativeBuilder.class
 mg\manao\backend\dto\VoyageDTO.class
 mg\manao\backend\entity\Utilisateur$UtilisateurBuilder.class

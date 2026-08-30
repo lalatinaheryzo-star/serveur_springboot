@@ -50,8 +50,6 @@ public class AuthController {
         return ResponseEntity.noContent().build();
     }
 
-<<<<<<< HEAD
-=======
     /**
      * "Mot de passe oublié" (Président / Voyageur — jamais ADMIN, voir
      * AuthService.forgotPassword()). Répond TOUJOURS 204, que l'adresse
@@ -64,7 +62,6 @@ public class AuthController {
         return ResponseEntity.noContent().build();
     }
 
->>>>>>> 6efaa14 (Backend Update)
     @GetMapping("/me")
     public ResponseEntity<UtilisateurDTO> me() {
         var current = CurrentUser.get();
@@ -83,13 +80,10 @@ public class AuthController {
         @NotBlank @Email
         private String email;
     }
-<<<<<<< HEAD
-=======
 
     @Getter @Setter
     public static class ForgotPasswordRequest {
         @NotBlank @Email
         private String email;
     }
->>>>>>> 6efaa14 (Backend Update)
 }

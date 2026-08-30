@@ -44,8 +44,6 @@ CREATE INDEX IF NOT EXISTS idx_demandes_coop_statut ON demandes_cooperatives(sta
 CREATE UNIQUE INDEX IF NOT EXISTS uq_demande_pending_par_utilisateur
     ON demandes_cooperatives(utilisateur_id)
     WHERE statut = 'PENDING';
-<<<<<<< HEAD
-=======
 
 -- 4) Index de performance ----------------------------------------------------
 -- Les listes admin/président/voyageur filtrent régulièrement sur ces colonnes.
@@ -65,4 +63,3 @@ CREATE INDEX IF NOT EXISTS idx_voyages_cooperative_id
 CREATE INDEX IF NOT EXISTS idx_voyages_date_depart
     ON voyages(date_depart, heure_depart);
 
->>>>>>> 6efaa14 (Backend Update)

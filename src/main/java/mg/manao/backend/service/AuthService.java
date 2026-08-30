@@ -8,42 +8,30 @@ import mg.manao.backend.entity.Utilisateur;
 import mg.manao.backend.exception.ApiException;
 import mg.manao.backend.repository.UtilisateurRepository;
 import mg.manao.backend.security.JwtService;
-<<<<<<< HEAD
-=======
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
->>>>>>> 6efaa14 (Backend Update)
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-<<<<<<< HEAD
-=======
 import java.security.SecureRandom;
 
->>>>>>> 6efaa14 (Backend Update)
 import static mg.manao.backend.service.UtilisateurService.toDto;
 
 @Service
 @RequiredArgsConstructor
 public class AuthService {
 
-<<<<<<< HEAD
-=======
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
     private static final String MOT_DE_PASSE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
     private static final SecureRandom RANDOM = new SecureRandom();
 
->>>>>>> 6efaa14 (Backend Update)
     private final UtilisateurRepository utilisateurRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final EmailExistenceValidator emailExistenceValidator;
     private final EmailVerificationService emailVerificationService;
-<<<<<<< HEAD
-=======
     private final EmailService emailService;
->>>>>>> 6efaa14 (Backend Update)
 
     public AuthResponse login(LoginRequest req) {
         Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(req.getEmail().trim())
@@ -102,8 +90,6 @@ public class AuthService {
         // boîte" à la place d'une connexion automatique.
         return new AuthResponse(null, toDto(user));
     }
-<<<<<<< HEAD
-=======
 
     /**
      * "Mot de passe oublié" — Président et Voyageur uniquement, jamais ADMIN
@@ -145,5 +131,4 @@ public class AuthService {
         }
         return sb.toString();
     }
->>>>>>> 6efaa14 (Backend Update)
 }
