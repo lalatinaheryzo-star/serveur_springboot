@@ -71,7 +71,13 @@ public class EmailExistenceValidator {
         }
     }
 
+<<<<<<< HEAD
 private boolean isEmpty(Attribute attr) {
     return attr == null || attr.size() == 0;
 }
+=======
+    private boolean isEmpty(Attribute attr) {
+        return attr == null || attr.size() == 0;
+    }
+>>>>>>> 6efaa14 (Backend Update)
 }

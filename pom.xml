@@ -135,6 +135,10 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
         <configuration>
+<<<<<<< HEAD
+=======
+          <mainClass>mg.manao.backend.BackendApplication</mainClass>
+>>>>>>> 6efaa14 (Backend Update)
           <excludes>
             <exclude>
               <groupId>org.projectlombok</groupId>

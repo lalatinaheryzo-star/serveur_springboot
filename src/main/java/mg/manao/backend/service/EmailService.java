@@ -177,4 +177,44 @@ public class EmailService {
     }
 
     private String nvl(String s) { return s == null ? "-" : s; }
+<<<<<<< HEAD
+=======
+
+    /**
+     * "Mot de passe oublié" (Président / Voyageur uniquement — jamais ADMIN,
+     * voir AuthService.forgotPassword()). Envoyé de façon SYNCHRONE, comme
+     * envoyerCodeVerification() : l'utilisateur doit savoir tout de suite si
+     * l'envoi a échoué plutôt que d'attendre en vain un e-mail.
+     *
+     * @return true si l'e-mail a été transmis avec succès au serveur SMTP.
+     */
+    public boolean envoyerNouveauMotDePasse(String destinataire, String prenom, String nouveauMotDePasse) {
+        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
+            log.warn("Email non configuré (app.email.enabled=false ou GMAIL_USERNAME/GMAIL_APP_PASSWORD manquants) "
+                    + "-> nouveau mot de passe non envoyé à {}.", destinataire);
+            return false;
+        }
+        String texte = String.format(
+                "Bonjour %s,%n%n"
+                + "Voici votre nouveau mot de passe pour vous connecter à Réservation en ligne :%n%n"
+                + "    %s%n%n"
+                + "Par sécurité, pensez à le changer dès votre prochaine connexion. "
+                + "Si vous n'êtes pas à l'origine de cette demande, contactez votre coopérative ou l'administrateur.",
+                nvl(prenom), nouveauMotDePasse
+        );
+        try {
+            SimpleMailMessage message = new SimpleMailMessage();
+            message.setFrom(from == null || from.isBlank() ? username : from);
+            message.setTo(destinataire);
+            message.setSubject("Votre nouveau mot de passe");
+            message.setText(texte);
+            mailSender.send(message);
+            log.info("Nouveau mot de passe envoyé à {}.", destinataire);
+            return true;
+        } catch (Exception e) {
+            log.error("Échec de l'envoi du nouveau mot de passe à {} : {}", destinataire, e.getMessage());
+            return false;
+        }
+    }
+>>>>>>> 6efaa14 (Backend Update)
 }

@@ -1,0 +1,24 @@
+# ── Secrets : ne JAMAIS committer ──
+.env
+.env.local
+.env.*.local
+
+# ── Build Maven ──
+target/
+*.jar
+*.war
+
+# ── IDE ──
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── Logs ──
+*.log

@@ -44,3 +44,25 @@ CREATE INDEX IF NOT EXISTS idx_demandes_coop_statut ON demandes_cooperatives(sta
 CREATE UNIQUE INDEX IF NOT EXISTS uq_demande_pending_par_utilisateur
     ON demandes_cooperatives(utilisateur_id)
     WHERE statut = 'PENDING';
+<<<<<<< HEAD
+=======
+
+-- 4) Index de performance ----------------------------------------------------
+-- Les listes admin/président/voyageur filtrent régulièrement sur ces colonnes.
+-- IF NOT EXISTS rend cette section sûre à rejouer dans Supabase.
+CREATE INDEX IF NOT EXISTS idx_reservations_voyage_id
+    ON reservations(voyage_id);
+CREATE INDEX IF NOT EXISTS idx_reservations_utilisateur_id
+    ON reservations(utilisateur_id);
+CREATE INDEX IF NOT EXISTS idx_reservations_statut_date
+    ON reservations(statut, date_reservation DESC);
+CREATE INDEX IF NOT EXISTS idx_paiements_date
+    ON paiements(date_paiement DESC);
+CREATE INDEX IF NOT EXISTS idx_paiements_statut
+    ON paiements(statut);
+CREATE INDEX IF NOT EXISTS idx_voyages_cooperative_id
+    ON voyages(cooperative_id);
+CREATE INDEX IF NOT EXISTS idx_voyages_date_depart
+    ON voyages(date_depart, heure_depart);
+
+>>>>>>> 6efaa14 (Backend Update)

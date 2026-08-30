@@ -8,21 +8,42 @@ import mg.manao.backend.entity.Utilisateur;
 import mg.manao.backend.exception.ApiException;
 import mg.manao.backend.repository.UtilisateurRepository;
 import mg.manao.backend.security.JwtService;
+<<<<<<< HEAD
+=======
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+>>>>>>> 6efaa14 (Backend Update)
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+<<<<<<< HEAD
+=======
+import java.security.SecureRandom;
+
+>>>>>>> 6efaa14 (Backend Update)
 import static mg.manao.backend.service.UtilisateurService.toDto;
 
 @Service
 @RequiredArgsConstructor
 public class AuthService {
 
+<<<<<<< HEAD
+=======
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
+    private static final String MOT_DE_PASSE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+    private static final SecureRandom RANDOM = new SecureRandom();
+
+>>>>>>> 6efaa14 (Backend Update)
     private final UtilisateurRepository utilisateurRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final EmailExistenceValidator emailExistenceValidator;
     private final EmailVerificationService emailVerificationService;
+<<<<<<< HEAD
+=======
+    private final EmailService emailService;
+>>>>>>> 6efaa14 (Backend Update)
 
     public AuthResponse login(LoginRequest req) {
         Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(req.getEmail().trim())
@@ -81,4 +102,48 @@ public class AuthService {
         // boîte" à la place d'une connexion automatique.
         return new AuthResponse(null, toDto(user));
     }
+<<<<<<< HEAD
+=======
+
+    /**
+     * "Mot de passe oublié" — Président et Voyageur uniquement, jamais ADMIN
+     * (le compte admin n'a pas cette fonctionnalité : il est provisionné une
+     * seule fois par AdminSeeder, pas par auto-inscription).
+     *
+     * Toujours silencieux côté réponse HTTP (voir AuthController) : que
+     * l'adresse existe ou non, ou qu'elle appartienne à l'ADMIN, l'appelant
+     * ne doit pas pouvoir le déduire de la réponse — seul le contenu de la
+     * boîte mail (ou son absence) le révèle à la personne qui la possède
+     * réellement.
+     */
+    @Transactional
+    public void forgotPassword(String email) {
+        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim()).orElse(null);
+        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
+            return;
+        }
+
+        String nouveauMotDePasse = genererMotDePasse();
+        user.setMotDePasse(passwordEncoder.encode(nouveauMotDePasse));
+        utilisateurRepository.save(user);
+
+        boolean envoye = emailService.envoyerNouveauMotDePasse(user.getEmail(), user.getPrenom(), nouveauMotDePasse);
+        if (!envoye) {
+            // Le mot de passe est déjà changé en base à ce stade : on ne peut
+            // pas revenir en arrière sans laisser une fenêtre où l'ancien ET
+            // le nouveau mot de passe coexisteraient dans la nature (e-mail
+            // parti mais pas confirmé, par ex.). On journalise pour
+            // intervention manuelle plutôt que de risquer un compte bloqué.
+            log.error("Nouveau mot de passe généré pour {} mais l'e-mail n'a pas pu être envoyé.", user.getEmail());
+        }
+    }
+
+    private String genererMotDePasse() {
+        StringBuilder sb = new StringBuilder(10);
+        for (int i = 0; i < 10; i++) {
+            sb.append(MOT_DE_PASSE_ALPHABET.charAt(RANDOM.nextInt(MOT_DE_PASSE_ALPHABET.length())));
+        }
+        return sb.toString();
+    }
+>>>>>>> 6efaa14 (Backend Update)
 }
