@@ -2,6 +2,7 @@ D:\projetsoutenance\backend\src\main\java\mg\manao\backend\BackendApplication.ja
 D:\projetsoutenance\backend\src\main\java\mg\manao\backend\config\AdminSeeder.java
 D:\projetsoutenance\backend\src\main\java\mg\manao\backend\config\ApplicationProperties.java
 D:\projetsoutenance\backend\src\main\java\mg\manao\backend\config\AsyncConfig.java
+D:\projetsoutenance\backend\src\main\java\mg\manao\backend\config\DataSeeder.java
 D:\projetsoutenance\backend\src\main\java\mg\manao\backend\config\SecurityConfig.java
 D:\projetsoutenance\backend\src\main\java\mg\manao\backend\controller\AuthController.java
 D:\projetsoutenance\backend\src\main\java\mg\manao\backend\controller\CooperativeController.java
