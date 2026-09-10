@@ -37,24 +37,28 @@ public class EmailVerificationService {
     @Value("${app.frontend-url}")
     private String frontendUrl;
 
-    /** Génère un nouveau code à 6 chiffres, l'enregistre sur le compte, et tente l'envoi. */
+    /**
+     * Génère un nouveau code à 6 chiffres, l'enregistre sur le compte, et tente l'envoi.
+     *
+     * NE LÈVE JAMAIS D'EXCEPTION si l'envoi échoue : cette méthode est appelée
+     * juste après la création du compte dans AuthService.register(), et une
+     * exception ici ne doit jamais pouvoir faire annuler (rollback) la
+     * création du compte lui-même — sans quoi le message "votre compte a été
+     * créé" serait mensonger et l'inscription resterait bloquée en boucle à
+     * chaque panne SMTP passagère. L'appelant (register(), ou renvoyer()
+     * ci-dessous) décide quoi faire du résultat.
+     *
+     * @return true si l'e-mail a été transmis avec succès au serveur SMTP.
+     */
     @Transactional
-    public void envoyerVerification(Utilisateur user) {
+    public boolean envoyerVerification(Utilisateur user) {
         String code = genererCodeUnique();
         user.setCodeVerification(code);
         user.setCodeVerificationExpiration(OffsetDateTime.now().plusMinutes(VALIDITE_MINUTES));
         utilisateurRepository.save(user);
 
         String lien = frontendUrl + "/verifier-email?token=" + code;
-        boolean envoye = emailService.envoyerCodeVerification(user.getEmail(), user.getPrenom(), code, lien);
-        if (!envoye) {
-            // On ne bloque pas la création du compte pour autant (SMTP peut
-            // être temporairement indisponible), mais l'utilisateur doit le
-            // savoir immédiatement plutôt que d'attendre en vain un e-mail.
-            throw ApiException.badRequest(
-                    "Votre compte a été créé, mais l'e-mail de vérification n'a pas pu être envoyé pour le moment. "
-                    + "Réessayez depuis \"Renvoyer le code\" dans quelques instants.");
-        }
+        return emailService.envoyerCodeVerification(user.getEmail(), user.getPrenom(), code, lien);
     }
 
     /**
@@ -97,6 +101,13 @@ public class EmailVerificationService {
         if (user.isEmailVerifie()) {
             throw ApiException.conflict("Cette adresse e-mail est déjà vérifiée.");
         }
-        envoyerVerification(user);
+        // Ici (contrairement à l'appel depuis register()) le compte existe
+        // déjà et rien d'autre n'est en jeu dans cette transaction : on peut
+        // sans risque informer l'utilisateur en cas d'échec d'envoi.
+        boolean envoye = envoyerVerification(user);
+        if (!envoye) {
+            throw ApiException.badRequest(
+                    "L'e-mail de vérification n'a pas pu être envoyé pour le moment. Réessayez dans quelques instants.");
+        }
     }
 }

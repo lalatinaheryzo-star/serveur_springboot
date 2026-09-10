@@ -55,7 +55,17 @@ public class AuthService {
         return new AuthResponse(token, toDto(user));
     }
 
-    @Transactional
+    // PAS de @Transactional ici (volontairement) : la création du compte
+    // (une seule insertion, déjà atomique via utilisateurRepository.save())
+    // ne doit jamais pouvoir être annulée par un échec ultérieur de l'envoi
+    // d'e-mail de vérification. Avant ce correctif, cette méthode était
+    // @Transactional et EmailVerificationService.envoyerVerification()
+    // levait une exception en cas d'échec SMTP : Spring annulait alors TOUT
+    // le bloc, y compris la création du compte déjà enregistrée juste
+    // avant — d'où le message "votre compte a été créé" alors qu'en réalité
+    // aucun compte n'existait en base, et un blocage en boucle de
+    // l'inscription (voyageur comme président, qui passe par le même
+    // endpoint) à chaque panne SMTP passagère sur le serveur.
     public AuthResponse register(RegisterRequest req) {
         String email = req.getEmail().trim().toLowerCase();
         if (utilisateurRepository.existsByEmailIgnoreCase(email)) {
@@ -82,7 +92,15 @@ public class AuthService {
                 .build();
         user = utilisateurRepository.save(user);
 
-        emailVerificationService.envoyerVerification(user);
+        // Best-effort : le compte est déjà créé et persisté à ce stade, quoi
+        // qu'il arrive ci-dessous. Si l'envoi échoue, l'utilisateur pourra
+        // toujours redemander un code via "Renvoyer le code" (voir
+        // EmailVerificationService.renvoyer()), qui elle informera
+        // correctement en cas de nouvel échec.
+        boolean envoye = emailVerificationService.envoyerVerification(user);
+        if (!envoye) {
+            log.warn("Compte {} créé mais e-mail de vérification non envoyé (SMTP indisponible ?).", user.getEmail());
+        }
 
         // Pas de token JWT tant que l'e-mail n'est pas vérifié : le compte
         // existe, mais l'utilisateur ne peut pas encore l'utiliser (voir
