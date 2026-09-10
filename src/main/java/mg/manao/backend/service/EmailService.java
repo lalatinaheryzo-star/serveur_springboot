@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -42,8 +43,53 @@ public class EmailService {
     @Value("${app.email.from:}")
     private String from;
 
+    public record EmailDiagnostic(boolean succes, String message) {
+    }
+
     public EmailService(JavaMailSender mailSender) {
         this.mailSender = mailSender;
+    }
+
+    public EmailDiagnostic diagnostiquerConnexion() {
+        if (!enabled) {
+            return new EmailDiagnostic(false, "L'envoi d'e-mails est désactivé.");
+        }
+        if (username == null || username.isBlank() || password == null || password.isBlank()) {
+            return new EmailDiagnostic(false, "La configuration SMTP est incomplète.");
+        }
+
+        try {
+            if (mailSender instanceof JavaMailSenderImpl sender) {
+                sender.testConnection();
+                return new EmailDiagnostic(true, "Connexion SMTP établie.");
+            }
+            return new EmailDiagnostic(false, "Le fournisseur SMTP ne permet pas le test de connexion.");
+        } catch (Exception e) {
+            log.warn("Échec du diagnostic SMTP : {}", e.getMessage());
+            return new EmailDiagnostic(false, "Connexion SMTP impossible.");
+        }
+    }
+
+    public EmailDiagnostic envoyerEmailTest(String destinataire) {
+        if (destinataire == null || destinataire.isBlank()) {
+            return new EmailDiagnostic(false, "Le destinataire est obligatoire.");
+        }
+        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
+            return new EmailDiagnostic(false, "La configuration SMTP est incomplète.");
+        }
+
+        try {
+            SimpleMailMessage message = new SimpleMailMessage();
+            message.setFrom(from == null || from.isBlank() ? username : from);
+            message.setTo(destinataire);
+            message.setSubject("E-mail de test MANAO");
+            message.setText("Cet e-mail confirme que la configuration SMTP de MANAO fonctionne.");
+            mailSender.send(message);
+            return new EmailDiagnostic(true, "E-mail de test envoyé.");
+        } catch (Exception e) {
+            log.warn("Échec de l'envoi de l'e-mail de test à {} : {}", destinataire, e.getMessage());
+            return new EmailDiagnostic(false, "E-mail de test non envoyé.");
+        }
     }
 
     @Async("notificationExecutor")
