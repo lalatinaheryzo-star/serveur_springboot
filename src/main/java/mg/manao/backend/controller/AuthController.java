@@ -3,6 +3,7 @@ package mg.manao.backend.controller;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
@@ -13,10 +14,11 @@ import mg.manao.backend.dto.auth.RegisterRequest;
 import mg.manao.backend.exception.ApiException;
 import mg.manao.backend.security.CurrentUser;
 import mg.manao.backend.service.AuthService;
-import mg.manao.backend.service.EmailVerificationService;
 import mg.manao.backend.service.UtilisateurService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.time.OffsetDateTime;
 
 @RestController
 @RequestMapping("/auth")
@@ -25,40 +27,37 @@ public class AuthController {
 
     private final AuthService authService;
     private final UtilisateurService utilisateurService;
-    private final EmailVerificationService emailVerificationService;
 
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest req) {
         return ResponseEntity.ok(authService.login(req));
     }
 
+    /**
+     * Inscription Voyageur (et point de départ d'une demande Président) :
+     * le compte est créé et actif immédiatement, aucun code de vérification
+     * n'est envoyé.
+     */
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest req) {
         return ResponseEntity.status(201).body(authService.register(req));
     }
 
-    /** Lien cliqué depuis l'e-mail de vérification (ou code collé manuellement côté frontend). */
-    @PostMapping("/verify-email")
-    public ResponseEntity<Void> verifyEmail(@Valid @RequestBody VerifyEmailRequest req) {
-        emailVerificationService.verifier(req.getToken());
-        return ResponseEntity.noContent().build();
-    }
-
-    @PostMapping("/resend-verification")
-    public ResponseEntity<Void> resendVerification(@Valid @RequestBody ResendVerificationRequest req) {
-        emailVerificationService.renvoyer(req.getEmail());
-        return ResponseEntity.noContent().build();
-    }
-
     /**
-     * "Mot de passe oublié" (Président / Voyageur — jamais ADMIN, voir
-     * AuthService.forgotPassword()). Répond TOUJOURS 204, que l'adresse
-     * existe ou non : la réponse HTTP ne doit jamais permettre de deviner
-     * si un compte existe pour une adresse donnée.
+     * "Mot de passe oublié" — bouton "Nouveau code".
+     * Génère un nouveau code à 6 chiffres et invalide le précédent.
+     * Réservé au Président / Voyageur (jamais ADMIN).
      */
-    @PostMapping("/forgot-password")
-    public ResponseEntity<Void> forgotPassword(@Valid @RequestBody ForgotPasswordRequest req) {
-        authService.forgotPassword(req.getEmail());
+    @PostMapping("/password/nouveau-code")
+    public ResponseEntity<NouveauCodeResponse> nouveauCode(@Valid @RequestBody NouveauCodeRequest req) {
+        var genere = authService.genererNouveauCode(req.getEmail());
+        return ResponseEntity.ok(new NouveauCodeResponse(genere.code(), genere.expiration()));
+    }
+
+    /** Validation du code + nouveau mot de passe. */
+    @PostMapping("/password/reinitialiser")
+    public ResponseEntity<Void> reinitialiserMotDePasse(@Valid @RequestBody ResetPasswordRequest req) {
+        authService.reinitialiserMotDePasse(req.getEmail(), req.getCode(), req.getPassword());
         return ResponseEntity.noContent().build();
     }
 
@@ -70,20 +69,20 @@ public class AuthController {
     }
 
     @Getter @Setter
-    public static class VerifyEmailRequest {
+    public static class NouveauCodeRequest {
+        @NotBlank @Email
+        private String email;
+    }
+
+    public record NouveauCodeResponse(String code, OffsetDateTime expiration) {}
+
+    @Getter @Setter
+    public static class ResetPasswordRequest {
+        @NotBlank @Email
+        private String email;
         @NotBlank
-        private String token;
-    }
-
-    @Getter @Setter
-    public static class ResendVerificationRequest {
-        @NotBlank @Email
-        private String email;
-    }
-
-    @Getter @Setter
-    public static class ForgotPasswordRequest {
-        @NotBlank @Email
-        private String email;
+        private String code;
+        @NotBlank @Size(min = 6)
+        private String password;
     }
 }

@@ -8,13 +8,12 @@ import mg.manao.backend.entity.Utilisateur;
 import mg.manao.backend.exception.ApiException;
 import mg.manao.backend.repository.UtilisateurRepository;
 import mg.manao.backend.security.JwtService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
+import java.time.OffsetDateTime;
 
 import static mg.manao.backend.service.UtilisateurService.toDto;
 
@@ -22,16 +21,17 @@ import static mg.manao.backend.service.UtilisateurService.toDto;
 @RequiredArgsConstructor
 public class AuthService {
 
-    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
-    private static final String MOT_DE_PASSE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+    /** Durée de validité d'un code de réinitialisation (inchangée : 30 min). */
+    private static final int CODE_VALIDITE_MINUTES = 30;
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final UtilisateurRepository utilisateurRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final EmailExistenceValidator emailExistenceValidator;
-    private final EmailVerificationService emailVerificationService;
-    private final EmailService emailService;
+
+    /** Code à 6 chiffres renvoyé à l'appelant après un clic sur "Nouveau code". */
+    public record NouveauCode(String code, OffsetDateTime expiration) {}
 
     public AuthResponse login(LoginRequest req) {
         Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(req.getEmail().trim())
@@ -41,40 +41,29 @@ public class AuthService {
             throw ApiException.unauthorized("Email ou mot de passe incorrect.");
         }
 
-        // Un compte créé via /auth/register (VOYAGEUR, et par promotion un
-        // futur PRESIDENT) doit avoir confirmé son adresse e-mail avant de
-        // pouvoir se connecter. Le compte ADMIN, provisionné par DataSeeder,
-        // est toujours déjà marqué vérifié.
-        if (!user.isEmailVerifie()) {
-            throw ApiException.unauthorized(
-                    "Veuillez d'abord vérifier votre adresse e-mail. Consultez votre boîte de réception "
-                    + "(et vos spams), ou demandez un nouveau code de vérification.");
-        }
-
+        // Plus aucun blocage lié à la vérification de l'adresse e-mail :
+        // un compte existant est un compte utilisable (ADMIN, PRESIDENT,
+        // VOYAGEUR). Les rôles et le JWT sont inchangés.
         String token = jwtService.generateToken(user);
         return new AuthResponse(token, toDto(user));
     }
 
-    // PAS de @Transactional ici (volontairement) : la création du compte
-    // (une seule insertion, déjà atomique via utilisateurRepository.save())
-    // ne doit jamais pouvoir être annulée par un échec ultérieur de l'envoi
-    // d'e-mail de vérification. Avant ce correctif, cette méthode était
-    // @Transactional et EmailVerificationService.envoyerVerification()
-    // levait une exception en cas d'échec SMTP : Spring annulait alors TOUT
-    // le bloc, y compris la création du compte déjà enregistrée juste
-    // avant — d'où le message "votre compte a été créé" alors qu'en réalité
-    // aucun compte n'existait en base, et un blocage en boucle de
-    // l'inscription (voyageur comme président, qui passe par le même
-    // endpoint) à chaque panne SMTP passagère sur le serveur.
+    /**
+     * Inscription directe : le compte est créé et immédiatement actif.
+     * Aucun code de vérification n'est généré ni envoyé par e-mail.
+     * Un token JWT est émis dès la création, ce qui permet à
+     * IntegrerCooperative (demande Président) d'enchaîner sans repasser
+     * par un écran intermédiaire.
+     */
+    @Transactional
     public AuthResponse register(RegisterRequest req) {
         String email = req.getEmail().trim().toLowerCase();
         if (utilisateurRepository.existsByEmailIgnoreCase(email)) {
             throw ApiException.conflict("Cet email est déjà utilisé.");
         }
-        // Étape 1 : le domaine doit réellement pouvoir recevoir du courrier
-        // (élimine les domaines inventés/mal orthographiés). Étape 2 (la
-        // vraie preuve que CETTE boîte est accessible) : le code de
-        // vérification envoyé juste après la création du compte.
+        // Contrôle conservé : le domaine doit pouvoir recevoir du courrier
+        // (fautes de frappe, domaines inventés). Ce n'est PAS la vérification
+        // par code Gmail — aucun e-mail n'est envoyé ici.
         if (!emailExistenceValidator.domaineAcceptantDuCourrier(email)) {
             throw ApiException.badRequest(
                     "Cette adresse e-mail semble invalide : le domaine ne peut pas recevoir de courrier. "
@@ -88,65 +77,78 @@ public class AuthService {
                 .telephone(req.getTelephone())
                 .motDePasse(passwordEncoder.encode(req.getPassword()))
                 .role(Utilisateur.Role.VOYAGEUR)
-                .emailVerifie(false)
+                .emailVerifie(true)
                 .build();
         user = utilisateurRepository.save(user);
 
-        // Best-effort : le compte est déjà créé et persisté à ce stade, quoi
-        // qu'il arrive ci-dessous. Si l'envoi échoue, l'utilisateur pourra
-        // toujours redemander un code via "Renvoyer le code" (voir
-        // EmailVerificationService.renvoyer()), qui elle informera
-        // correctement en cas de nouvel échec.
-        boolean envoye = emailVerificationService.envoyerVerification(user);
-        if (!envoye) {
-            log.warn("Compte {} créé mais e-mail de vérification non envoyé (SMTP indisponible ?).", user.getEmail());
-        }
-
-        // Pas de token JWT tant que l'e-mail n'est pas vérifié : le compte
-        // existe, mais l'utilisateur ne peut pas encore l'utiliser (voir
-        // login() ci-dessus). Le frontend affiche l'écran "vérifiez votre
-        // boîte" à la place d'une connexion automatique.
-        return new AuthResponse(null, toDto(user));
+        return new AuthResponse(jwtService.generateToken(user), toDto(user));
     }
 
     /**
-     * "Mot de passe oublié" — Président et Voyageur uniquement, jamais ADMIN
-     * (le compte admin n'a pas cette fonctionnalité : il est provisionné une
-     * seule fois par AdminSeeder, pas par auto-inscription).
+     * Bouton "Nouveau code" — génère un code de réinitialisation à 6
+     * chiffres pour le compte identifié par son e-mail.
      *
-     * Toujours silencieux côté réponse HTTP (voir AuthController) : que
-     * l'adresse existe ou non, ou qu'elle appartienne à l'ADMIN, l'appelant
-     * ne doit pas pouvoir le déduire de la réponse — seul le contenu de la
-     * boîte mail (ou son absence) le révèle à la personne qui la possède
-     * réellement.
+     * Règles :
+     *  - un seul code valide à la fois : le nouveau code écrase l'ancien,
+     *    qui devient immédiatement invalide ;
+     *  - le code est stocké HACHÉ (BCrypt), jamais en clair ;
+     *  - il expire au bout de 30 minutes ;
+     *  - le compte ADMIN reste exclu de cette fonctionnalité.
      */
     @Transactional
-    public void forgotPassword(String email) {
-        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim()).orElse(null);
-        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
-            return;
+    public NouveauCode genererNouveauCode(String email) {
+        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim())
+                .orElseThrow(() -> ApiException.notFound("Aucun compte ne correspond à cette adresse e-mail."));
+
+        if (user.getRole() == Utilisateur.Role.ADMIN) {
+            throw ApiException.badRequest(
+                    "Le compte administrateur ne dispose pas de la récupération de mot de passe.");
         }
 
-        String nouveauMotDePasse = genererMotDePasse();
-        user.setMotDePasse(passwordEncoder.encode(nouveauMotDePasse));
+        String code = String.format("%06d", RANDOM.nextInt(1_000_000));
+        OffsetDateTime expiration = OffsetDateTime.now().plusMinutes(CODE_VALIDITE_MINUTES);
+
+        user.setCodeReinitialisation(passwordEncoder.encode(code));
+        user.setCodeReinitialisationExpiration(expiration);
         utilisateurRepository.save(user);
 
-        boolean envoye = emailService.envoyerNouveauMotDePasse(user.getEmail(), user.getPrenom(), nouveauMotDePasse);
-        if (!envoye) {
-            // Le mot de passe est déjà changé en base à ce stade : on ne peut
-            // pas revenir en arrière sans laisser une fenêtre où l'ancien ET
-            // le nouveau mot de passe coexisteraient dans la nature (e-mail
-            // parti mais pas confirmé, par ex.). On journalise pour
-            // intervention manuelle plutôt que de risquer un compte bloqué.
-            log.error("Nouveau mot de passe généré pour {} mais l'e-mail n'a pas pu être envoyé.", user.getEmail());
-        }
+        return new NouveauCode(code, expiration);
     }
 
-    private String genererMotDePasse() {
-        StringBuilder sb = new StringBuilder(10);
-        for (int i = 0; i < 10; i++) {
-            sb.append(MOT_DE_PASSE_ALPHABET.charAt(RANDOM.nextInt(MOT_DE_PASSE_ALPHABET.length())));
+    /**
+     * Réinitialisation effective : le code fourni doit être le DERNIER code
+     * généré, non expiré et non encore utilisé. En cas de succès, le code
+     * est effacé — il ne peut donc pas servir une seconde fois.
+     */
+    @Transactional
+    public void reinitialiserMotDePasse(String email, String code, String nouveauMotDePasse) {
+        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim())
+                .orElseThrow(() -> ApiException.badRequest("Code invalide ou expiré."));
+
+        if (user.getRole() == Utilisateur.Role.ADMIN) {
+            throw ApiException.badRequest("Code invalide ou expiré.");
         }
-        return sb.toString();
+
+        String hash = user.getCodeReinitialisation();
+        if (hash == null) {
+            throw ApiException.badRequest("Aucun code en cours. Cliquez sur \"Nouveau code\".");
+        }
+        if (user.getCodeReinitialisationExpiration() == null
+                || user.getCodeReinitialisationExpiration().isBefore(OffsetDateTime.now())) {
+            throw ApiException.badRequest("Ce code a expiré. Cliquez sur \"Nouveau code\".");
+        }
+        if (!passwordEncoder.matches(code == null ? "" : code.trim(), hash)) {
+            // Un ancien code ne correspond plus au hash stocké : il est donc
+            // refusé ici, sans traitement particulier.
+            throw ApiException.badRequest("Code incorrect.");
+        }
+        if (nouveauMotDePasse == null || nouveauMotDePasse.length() < 6) {
+            throw ApiException.badRequest("Le mot de passe doit contenir au moins 6 caractères.");
+        }
+
+        user.setMotDePasse(passwordEncoder.encode(nouveauMotDePasse));
+        user.setCodeReinitialisation(null);          // usage unique
+        user.setCodeReinitialisationExpiration(null);
+        utilisateurRepository.save(user);
     }
 }

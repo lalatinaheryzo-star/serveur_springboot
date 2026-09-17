@@ -48,22 +48,28 @@ public class Utilisateur {
     @Column(name = "date_creation", nullable = false, updatable = false)
     private OffsetDateTime dateCreation;
 
-    // ── Vérification réelle de l'adresse e-mail (double opt-in) ──────────
-    // Un compte VOYAGEUR (et donc, par promotion, un futur PRESIDENT) créé
-    // via /auth/register ne peut pas se connecter tant que emailVerifie
-    // n'est pas passé à true (voir AuthService.register()/login() et
-    // EmailVerificationService). Le compte ADMIN, provisionné une seule
-    // fois via DataSeeder à partir d'une adresse déjà connue et réelle,
-    // est marqué vérifié dès sa création.
+    // ── Statut du compte ────────────────────────────────────────────────
+    // Colonne conservée (aucune suppression en base) mais elle ne bloque
+    // plus la connexion : depuis la suppression de la vérification Gmail à
+    // l'inscription, tout compte créé via /auth/register est actif
+    // immédiatement et ce champ vaut true dès la création.
     @Column(name = "email_verifie", nullable = false)
     @Builder.Default
-    private boolean emailVerifie = false;
+    private boolean emailVerifie = true;
 
+    // ── Code de réinitialisation du mot de passe ("Nouveau code") ────────
+    // Ces deux colonnes existaient déjà (code_verification /
+    // code_verification_expiration) pour la vérification d'inscription :
+    // elles sont RÉUTILISÉES telles quelles pour le code "Mot de passe
+    // oublié", donc aucune migration de base n'est nécessaire.
+    // Le code n'est jamais stocké en clair : on garde son hash BCrypt.
+    // Un seul code à la fois par compte -> générer un nouveau code écrase
+    // l'ancien, qui devient de fait invalide.
     @Column(name = "code_verification")
-    private String codeVerification;
+    private String codeReinitialisation;
 
     @Column(name = "code_verification_expiration")
-    private OffsetDateTime codeVerificationExpiration;
+    private OffsetDateTime codeReinitialisationExpiration;
 
     @PrePersist
     public void prePersist() {

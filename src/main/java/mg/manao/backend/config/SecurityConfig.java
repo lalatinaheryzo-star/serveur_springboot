@@ -25,7 +25,7 @@ import java.util.List;
 /**
  * ── Règles d'autorisation ──────────────────────────────────────
  * Publiques (aucun token requis) :
- *   - POST /auth/login, /auth/register, /auth/verify-email, /auth/resend-verification, /auth/forgot-password
+ *   - POST /auth/login, /auth/register, /auth/password/nouveau-code, /auth/password/reinitialiser
  *   - GET  /voyages, /voyages/{id}, /voyages/{id}/places, /cooperatives
  *   - GET  /recus/verify/{token}, POST /recus/verify/{token}/checkin
  *       (page scannée par un agent de gare, sans compte — §17 de la spec)
@@ -104,8 +104,8 @@ public class SecurityConfig {
 
                 // ── Public ──────────────────────────────────
                 .requestMatchers(HttpMethod.POST, "/auth/login", "/auth/register",
-                                                   "/auth/verify-email", "/auth/resend-verification",
-                                                   "/auth/forgot-password").permitAll()
+                                                   "/auth/password/nouveau-code",
+                                                   "/auth/password/reinitialiser").permitAll()
                 .requestMatchers(HttpMethod.GET, "/voyages", "/voyages/**", "/cooperatives").permitAll()
                 .requestMatchers(HttpMethod.GET, "/recus/verify/**").permitAll()
                 .requestMatchers(HttpMethod.POST, "/recus/verify/**").permitAll()
