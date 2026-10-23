@@ -280,6 +280,28 @@ public class EmailService {
     private String nvl(String s) { return s == null ? "-" : s; }
 
     /**
+     * Sends a reset code synchronously. The code is never returned over HTTP.
+     */
+    public boolean envoyerCodeReinitialisation(String destinataire, String prenom, String code) {
+        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
+            log.warn("Email non configure -> reset code not sent.");
+            return false;
+        }
+        String texte = String.format(
+                "Bonjour %s,%n%nVotre code de reinitialisation est : %s%n%n"
+                        + "Il est valable 30 minutes et ne peut etre utilise qu'une seule fois. "
+                        + "Si vous n'etes pas a l'origine de cette demande, ignorez cet e-mail.",
+                nvl(prenom), code);
+        return envoyerAvecNouvellesTentatives(destinataire, () -> {
+            SimpleMailMessage message = new SimpleMailMessage();
+            message.setFrom(from == null || from.isBlank() ? username : from);
+            message.setTo(destinataire);
+            message.setSubject("Votre code de reinitialisation");
+            message.setText(texte);
+            mailSender.send(message);
+        });
+    }
+    /**
      * "Mot de passe oublié" (Président / Voyageur uniquement — jamais ADMIN,
      * voir AuthService.forgotPassword()). Envoyé de façon SYNCHRONE, comme
      * envoyerCodeVerification() : l'utilisateur doit savoir tout de suite si

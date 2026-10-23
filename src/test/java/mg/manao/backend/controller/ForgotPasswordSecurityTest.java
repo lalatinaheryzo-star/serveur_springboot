@@ -52,4 +52,15 @@ class ForgotPasswordSecurityTest {
         mockMvc.perform(get("/auth/me"))
                 .andExpect(status().isForbidden());
     }
+
+    @Test
+    void requestResetCodeIsPublicAndReturnsNoSecret() throws Exception {
+        mockMvc.perform(post("/auth/password/nouveau-code")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"person@example.com\"}"))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""));
+
+        verify(authService).genererNouveauCode("person@example.com");
+    }
 }

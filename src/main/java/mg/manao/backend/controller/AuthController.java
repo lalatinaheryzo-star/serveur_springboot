@@ -18,7 +18,6 @@ import mg.manao.backend.service.UtilisateurService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.OffsetDateTime;
 
 @RestController
 @RequestMapping("/auth")
@@ -59,11 +58,10 @@ public class AuthController {
      * Réservé au Président / Voyageur (jamais ADMIN).
      */
     @PostMapping("/password/nouveau-code")
-    public ResponseEntity<NouveauCodeResponse> nouveauCode(@Valid @RequestBody NouveauCodeRequest req) {
-        var genere = authService.genererNouveauCode(req.getEmail());
-        return ResponseEntity.ok(new NouveauCodeResponse(genere.code(), genere.expiration()));
+    public ResponseEntity<Void> nouveauCode(@Valid @RequestBody NouveauCodeRequest req) {
+        authService.genererNouveauCode(req.getEmail());
+        return ResponseEntity.noContent().build();
     }
-
     /** Validation du code + nouveau mot de passe. */
     @PostMapping("/password/reinitialiser")
     public ResponseEntity<Void> reinitialiserMotDePasse(@Valid @RequestBody ResetPasswordRequest req) {
@@ -89,8 +87,6 @@ public class AuthController {
         @NotBlank @Email
         private String email;
     }
-
-    public record NouveauCodeResponse(String code, OffsetDateTime expiration) {}
 
     @Getter @Setter
     public static class ResetPasswordRequest {

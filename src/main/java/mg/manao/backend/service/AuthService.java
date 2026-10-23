@@ -36,8 +36,6 @@ public class AuthService {
     private final EmailService emailService;
 
     /** Code à 6 chiffres renvoyé à l'appelant après un clic sur "Nouveau code". */
-    public record NouveauCode(String code, OffsetDateTime expiration) {}
-
     public AuthResponse login(LoginRequest req) {
         Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(req.getEmail().trim())
                 .orElseThrow(() -> ApiException.unauthorized("Email ou mot de passe incorrect."));
@@ -56,7 +54,7 @@ public class AuthService {
     /**
      * Inscription directe : le compte est créé et immédiatement actif.
      * Aucun code de vérification n'est généré ni envoyé par e-mail.
-     * Un token JWT est émis dès la création, ce qui permet à
+     * Failed delivery leaves no active reset code.
      * IntegrerCooperative (demande Président) d'enchaîner sans repasser
      * par un écran intermédiaire.
      */
@@ -121,36 +119,37 @@ public class AuthService {
     }
 
     /**
-     * Bouton "Nouveau code" — génère un code de réinitialisation à 6
-     * chiffres pour le compte identifié par son e-mail.
-     *
-     * Règles :
-     *  - un seul code valide à la fois : le nouveau code écrase l'ancien,
-     *    qui devient immédiatement invalide ;
-     *  - le code est stocké HACHÉ (BCrypt), jamais en clair ;
-     *  - il expire au bout de 30 minutes ;
-     *  - le compte ADMIN reste exclu de cette fonctionnalité.
+     * Sends a six-digit reset code without disclosing account details.
+     * The response does not disclose account existence, role, or delivery result.
+     * Failed delivery leaves no active reset code.
      */
     @Transactional
-    public NouveauCode genererNouveauCode(String email) {
-        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim())
-                .orElseThrow(() -> ApiException.notFound("Aucun compte ne correspond à cette adresse e-mail."));
-
-        if (user.getRole() == Utilisateur.Role.ADMIN) {
-            throw ApiException.badRequest(
-                    "Le compte administrateur ne dispose pas de la récupération de mot de passe.");
+    public void genererNouveauCode(String email) {
+        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim()).orElse(null);
+        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
+            return;
         }
 
-        String code = String.format("%06d", RANDOM.nextInt(1_000_000));
-        OffsetDateTime expiration = OffsetDateTime.now().plusMinutes(CODE_VALIDITE_MINUTES);
-
-        user.setCodeReinitialisation(passwordEncoder.encode(code));
-        user.setCodeReinitialisationExpiration(expiration);
+        // Invalidate the previous code even if the new delivery fails.
+        user.setCodeReinitialisation(null);
+        user.setCodeReinitialisationExpiration(null);
         utilisateurRepository.save(user);
 
-        return new NouveauCode(code, expiration);
-    }
+        String code = String.format("%06d", RANDOM.nextInt(1_000_000));
+        try {
+            if (!emailService.envoyerCodeReinitialisation(user.getEmail(), user.getPrenom(), code)) {
+                log.warn("Reset code delivery failed.");
+                return;
+            }
+        } catch (RuntimeException e) {
+            log.warn("Ã‰chec de l'envoi du code de rÃ©initialisation : {}", e.getMessage());
+            return;
+        }
 
+        user.setCodeReinitialisation(passwordEncoder.encode(code));
+        user.setCodeReinitialisationExpiration(OffsetDateTime.now().plusMinutes(CODE_VALIDITE_MINUTES));
+        utilisateurRepository.save(user);
+    }
     /**
      * Réinitialisation effective : le code fourni doit être le DERNIER code
      * généré, non expiré et non encore utilisé. En cas de succès, le code
