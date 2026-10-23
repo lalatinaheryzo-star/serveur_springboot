@@ -1,6 +1,8 @@
 package mg.manao.backend.service;
 
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import mg.manao.backend.dto.auth.AuthResponse;
 import mg.manao.backend.dto.auth.LoginRequest;
 import mg.manao.backend.dto.auth.RegisterRequest;
@@ -23,12 +25,15 @@ public class AuthService {
 
     /** Durée de validité d'un code de réinitialisation (inchangée : 30 min). */
     private static final int CODE_VALIDITE_MINUTES = 30;
+    private static final String MOT_DE_PASSE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
     private final UtilisateurRepository utilisateurRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final EmailExistenceValidator emailExistenceValidator;
+    private final EmailService emailService;
 
     /** Code à 6 chiffres renvoyé à l'appelant après un clic sur "Nouveau code". */
     public record NouveauCode(String code, OffsetDateTime expiration) {}
@@ -82,6 +87,37 @@ public class AuthService {
         user = utilisateurRepository.save(user);
 
         return new AuthResponse(jwtService.generateToken(user), toDto(user));
+    }
+
+    /**
+     * Compatibilité avec le client mobile : génère un mot de passe temporaire
+     * et l'envoie par e-mail, sans révéler si le compte existe.
+     */
+    @Transactional
+    public void forgotPassword(String email) {
+        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim()).orElse(null);
+        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
+            return;
+        }
+
+        String nouveauMotDePasse = genererMotDePasse();
+        if (!emailService.envoyerNouveauMotDePasse(user.getEmail(), user.getPrenom(), nouveauMotDePasse)) {
+            log.error("Le nouveau mot de passe n'a pas pu être envoyé par e-mail à {}.", user.getEmail());
+            return;
+        }
+
+        user.setMotDePasse(passwordEncoder.encode(nouveauMotDePasse));
+        user.setCodeReinitialisation(null);
+        user.setCodeReinitialisationExpiration(null);
+        utilisateurRepository.save(user);
+    }
+
+    private String genererMotDePasse() {
+        StringBuilder password = new StringBuilder(10);
+        for (int i = 0; i < 10; i++) {
+            password.append(MOT_DE_PASSE_ALPHABET.charAt(RANDOM.nextInt(MOT_DE_PASSE_ALPHABET.length())));
+        }
+        return password.toString();
     }
 
     /**

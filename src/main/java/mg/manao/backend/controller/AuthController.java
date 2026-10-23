@@ -44,6 +44,16 @@ public class AuthController {
     }
 
     /**
+     * Compatibilité avec les clients mobiles utilisant l'ancien parcours :
+     * réponse identique que l'adresse soit connue ou non.
+     */
+    @PostMapping("/forgot-password")
+    public ResponseEntity<Void> forgotPassword(@Valid @RequestBody ForgotPasswordRequest req) {
+        authService.forgotPassword(req.getEmail());
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
      * "Mot de passe oublié" — bouton "Nouveau code".
      * Génère un nouveau code à 6 chiffres et invalide le précédent.
      * Réservé au Président / Voyageur (jamais ADMIN).
@@ -70,6 +80,12 @@ public class AuthController {
 
     @Getter @Setter
     public static class NouveauCodeRequest {
+        @NotBlank @Email
+        private String email;
+    }
+
+    @Getter @Setter
+    public static class ForgotPasswordRequest {
         @NotBlank @Email
         private String email;
     }
