@@ -104,6 +104,7 @@ public class SecurityConfig {
 
                 // ── Public ──────────────────────────────────
                 .requestMatchers(HttpMethod.POST, "/auth/login", "/auth/register",
+                                                   "/auth/forgot-password",
                                                    "/auth/password/nouveau-code",
                                                    "/auth/password/reinitialiser").permitAll()
                 .requestMatchers(HttpMethod.GET, "/voyages", "/voyages/**", "/cooperatives").permitAll()
