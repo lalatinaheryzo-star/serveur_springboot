@@ -101,14 +101,15 @@ public class AuthService {
         }
 
         String nouveauMotDePasse = genererMotDePasse();
+        if (!emailService.envoyerNouveauMotDePasse(user.getEmail(), user.getPrenom(), nouveauMotDePasse)) {
+            log.error("Le nouveau mot de passe n'a pas pu être envoyé par e-mail à {}.", user.getEmail());
+            return;
+        }
+
         user.setMotDePasse(passwordEncoder.encode(nouveauMotDePasse));
         user.setCodeReinitialisation(null);
         user.setCodeReinitialisationExpiration(null);
         utilisateurRepository.save(user);
-
-        if (!emailService.envoyerNouveauMotDePasse(user.getEmail(), user.getPrenom(), nouveauMotDePasse)) {
-            log.error("Nouveau mot de passe généré pour {} mais l'e-mail n'a pas pu être envoyé.", user.getEmail());
-        }
     }
 
     private String genererMotDePasse() {

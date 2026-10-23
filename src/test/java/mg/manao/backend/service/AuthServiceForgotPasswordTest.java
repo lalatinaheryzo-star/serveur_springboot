@@ -81,4 +81,24 @@ class AuthServiceForgotPasswordTest {
         assertNull(user.getCodeReinitialisationExpiration());
         verify(utilisateurRepository).save(user);
     }
+
+    @Test
+    void forgotPasswordDoesNotChangeCredentialsWhenEmailCannotBeSent() {
+        Utilisateur user = Utilisateur.builder()
+                .nom("Voyageur")
+                .prenom("Ada")
+                .email("ada@example.com")
+                .motDePasse("old-hash")
+                .role(Utilisateur.Role.VOYAGEUR)
+                .codeReinitialisation("pending-code-hash")
+                .build();
+        when(utilisateurRepository.findByEmailIgnoreCase("ada@example.com")).thenReturn(Optional.of(user));
+        when(emailService.envoyerNouveauMotDePasse(anyString(), anyString(), anyString())).thenReturn(false);
+
+        authService.forgotPassword("ada@example.com");
+
+        assertEquals("old-hash", user.getMotDePasse());
+        assertEquals("pending-code-hash", user.getCodeReinitialisation());
+        verify(utilisateurRepository, never()).save(user);
+    }
 }
