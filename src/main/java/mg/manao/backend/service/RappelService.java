@@ -30,6 +30,9 @@ public class RappelService {
         ZonedDateTime heureRappel = calculerHeureRappel(voyage, cooperative);
         if (heureRappel == null) return false;
         ZonedDateTime maintenant = ZonedDateTime.now(FUSEAU_MADAGASCAR);
-        return !maintenant.isBefore(heureRappel);
+        // Fenêtre d'envoi : à partir de l'heure de rappel, et JAMAIS après le départ du voyage
+        // (un rappel « dans 0 minutes » envoyé après coup n'a aucun sens).
+        ZonedDateTime depart = LocalDateTime.of(voyage.getDateDepart(), voyage.getHeureDepart()).atZone(FUSEAU_MADAGASCAR);
+        return !maintenant.isBefore(heureRappel) && maintenant.isBefore(depart);
     }
 }

@@ -5,6 +5,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Déploiement Render : uniquement à la demande (Actions > CI > Run workflow, cocher « deployer »).
+  workflow_dispatch:
+    inputs:
+      deployer:
+        description: "Déclencher aussi le déploiement Render (après tests verts)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   build-and-test:
@@ -31,8 +41,9 @@ jobs:
           path: target/*.jar
 
   # ------------------------------------------------------------------
-  # Optionnel : déclenche un déploiement Render dès que la CI passe
-  # sur main. Render redéploie déjà automatiquement à chaque push
+  # Optionnel : déploiement Render MANUEL (jamais automatique à chaque push :
+  # un push sur main ne doit pas déployer en production sans décision humaine).
+  # Ancien comportement : déclenché à chaque push sur main. Render redéploie déjà automatiquement à chaque push
   # (autoDeploy: true dans render.yaml) si votre repo GitHub est
   # connecté nativement à Render — dans ce cas ce job est redondant
   # et peut être supprimé. Gardez-le seulement si vous préférez
@@ -41,7 +52,7 @@ jobs:
   deploy-render:
     name: Déclencher le déploiement Render
     needs: build-and-test
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.deployer == true
     runs-on: ubuntu-latest
     steps:
       - name: Appeler le Render Deploy Hook

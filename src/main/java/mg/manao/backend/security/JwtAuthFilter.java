@@ -35,6 +35,12 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 try {
                     UUID userId = jwtService.extractUserId(token);
                     UserDetails userDetails = userDetailsService.loadUserById(userId);
+                    if (userDetails instanceof SecurityUserDetails sud
+                            && jwtService.isIssuedBeforePasswordChange(token, sud.getUtilisateur())) {
+                        // Mot de passe changé depuis l'émission du jeton : requête anonyme (401).
+                        filterChain.doFilter(request, response);
+                        return;
+                    }
                     UsernamePasswordAuthenticationToken authToken =
                             new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
                     authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));

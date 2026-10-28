@@ -41,21 +41,20 @@ public class RecuController {
 
     @GetMapping("/reservation/{reservationId}")
     public RecuDTO findByReservation(@PathVariable UUID reservationId) {
-        // La requête du service charge déjà reçu + paiement + réservation +
-        // voyage + coopérative + voyageur en une seule lecture SQL.
-        RecuDTO dto = recuService.findByReservation(reservationId);
-        assertOwnerOrAdmin(dto);
-        return dto;
+        // Le contrôle d'accès (propriétaire / Président de la coopérative / ADMIN) est fait dans le
+        // service AVANT toute génération de reçu.
+        SecurityUserDetails current = CurrentUser.get();
+        if (current == null) throw ApiException.unauthorized("Non authentifié.");
+        return recuService.findByReservation(reservationId, current.getId(), current.getRole());
     }
 
     @PostMapping
     public ResponseEntity<RecuDTO> create(@Valid @RequestBody RecuIO.CreateRecuRequest req) {
         SecurityUserDetails current = CurrentUser.get();
         if (current == null) throw ApiException.unauthorized("Non authentifié.");
-        // Le contrôle fin (le paiement appartient bien à l'utilisateur) est fait via
-        // le paiement -> réservation -> utilisateur dans RecuService le cas échéant ;
-        // ici on s'assure au minimum que la requête est authentifiée.
-        return ResponseEntity.status(201).body(recuService.create(req));
+        // RecuService.create vérifie que le paiement appartient à l'utilisateur connecté
+        // (ou à la coopérative du Président, ou que l'appelant est ADMIN).
+        return ResponseEntity.status(201).body(recuService.create(req, current.getId(), current.getRole()));
     }
 
     @GetMapping("/{id}/download")
@@ -79,17 +78,27 @@ public class RecuController {
     }
 
     // ── Page publique de vérification / embarquement (VerificationQR.jsx) ──
-    // Aucune authentification requise (voir SecurityConfig) : un agent de gare
-    // scanne le QR code sans compte utilisateur.
+    // GET /verify/{token} : public (contrôle visuel du billet, données minimales).
+    // POST /verify/{token}/checkin : authentification obligatoire (voir SecurityConfig).
 
     @GetMapping("/verify/{token}")
     public RecuIO.VerifyResponse verify(@PathVariable String token) {
         return recuService.verifyByToken(token);
     }
 
+    /**
+     * Validation de l'embarquement : authentification obligatoire (voir SecurityConfig) et réservée
+     * au Président de la coopérative concernée ou à l'ADMIN (contrôle dans RecuService.checkin).
+     * Le corps (checked_by) est accepté pour compatibilité mais ignoré : l'agent enregistré est
+     * l'utilisateur authentifié.
+     */
     @PostMapping("/verify/{token}/checkin")
     public RecuIO.CheckinResponse checkin(@PathVariable String token, @RequestBody(required = false) RecuIO.CheckinRequest req) {
-        return recuService.checkin(token, req != null ? req : new RecuIO.CheckinRequest());
+        SecurityUserDetails current = CurrentUser.get();
+        if (current == null) throw ApiException.unauthorized("Connexion requise pour valider l'embarquement.");
+        String agent = ((current.getUtilisateur().getPrenom() == null ? "" : current.getUtilisateur().getPrenom()) + " "
+                + (current.getUtilisateur().getNom() == null ? "" : current.getUtilisateur().getNom())).trim();
+        return recuService.checkin(token, current.getId(), current.getRole(), agent.isEmpty() ? "Agent" : agent);
     }
 
     private void assertOwnerOrAdmin(RecuDTO dto) {

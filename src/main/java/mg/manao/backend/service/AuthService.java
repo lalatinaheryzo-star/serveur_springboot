@@ -13,6 +13,7 @@ import mg.manao.backend.security.JwtService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.security.SecureRandom;
 import java.time.OffsetDateTime;
@@ -24,8 +25,34 @@ import static mg.manao.backend.service.UtilisateurService.toDto;
 public class AuthService {
 
     /** Durée de validité d'un code de réinitialisation (inchangée : 30 min). */
-    private static final int CODE_VALIDITE_MINUTES = 30;
-    private static final String MOT_DE_PASSE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+    static final int CODE_VALIDITE_MINUTES = 30;
+    /** Tentatives incorrectes tolérées sur un même code ; au-delà, le code est invalidé. */
+    static final int MAX_TENTATIVES_CODE = 5;
+    /** Délai minimal entre deux demandes de code pour un même compte. */
+    static final int DELAI_MIN_ENTRE_DEMANDES_SECONDES = 60;
+    /** Échecs de connexion consécutifs avant verrouillage temporaire du compte. */
+    static final int MAX_ECHECS_CONNEXION = 5;
+    /** Durée maximale du verrouillage. Le verrou est PROGRESSIF : 1 min, puis 4, puis 15 (plafond). */
+    static final int VERROU_CONNEXION_MINUTES = 15;
+
+    /**
+     * Durée du verrou selon le nombre d'échecs cumulés (jamais remis à zéro tant que l'utilisateur
+     * légitime ne s'est pas connecté ou n'a pas réinitialisé son mot de passe). Un tiers qui
+     * s'acharne obtient des verrous de plus en plus longs, mais une rafale isolée de 5 essais ne
+     * bloque le vrai propriétaire qu'une minute (limite l'abus de verrouillage d'un compte tiers).
+     */
+    static int dureeVerrouMinutes(int echecsCumules) {
+        int palier = Math.max(0, (echecsCumules - MAX_ECHECS_CONNEXION) / MAX_ECHECS_CONNEXION);
+        return switch (palier) {
+            case 0 -> 1;
+            case 1 -> 4;
+            default -> VERROU_CONNEXION_MINUTES;
+        };
+    }
+
+    static final String MESSAGE_CONNEXION_ECHEC = "Email ou mot de passe incorrect.";
+    static final String MESSAGE_CODE_INVALIDE = "Code invalide ou expiré.";
+
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
@@ -34,14 +61,72 @@ public class AuthService {
     private final JwtService jwtService;
     private final EmailExistenceValidator emailExistenceValidator;
     private final EmailService emailService;
+    private final TransactionTemplate transactionTemplate;
 
-    /** Code à 6 chiffres renvoyé à l'appelant après un clic sur "Nouveau code". */
+    /** Hash factice, calculé une seule fois, pour égaliser le temps de réponse quand le compte n'existe pas. */
+    private volatile String hashFactice;
+
+    private String hashFactice() {
+        String h = hashFactice;
+        if (h == null) {
+            h = passwordEncoder.encode("mot-de-passe-factice-jamais-utilise");
+            hashFactice = h;
+        }
+        return h;
+    }
+
+    /** Effectue un calcul BCrypt « pour rien » afin que « compte inconnu » ne réponde pas nettement plus vite. */
+    private void travailFactice(String secret) {
+        passwordEncoder.matches(secret == null ? "" : secret, hashFactice());
+    }
+
+    /**
+     * Connexion avec limitation des échecs (AUTH-03).
+     * Le compte est verrouillé en lecture/écriture pendant la vérification : des requêtes
+     * parallèles sur le même compte sont donc comptées l'une après l'autre.
+     * Les réponses d'échec sont identiques (401, même message) pour : compte inconnu,
+     * mauvais mot de passe et compte temporairement verrouillé (AUTH-07).
+     * noRollbackFor : le compteur d'échecs doit être conservé même quand on lève l'exception.
+     */
+    @Transactional(noRollbackFor = ApiException.class)
     public AuthResponse login(LoginRequest req) {
-        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(req.getEmail().trim())
-                .orElseThrow(() -> ApiException.unauthorized("Email ou mot de passe incorrect."));
+        String email = req.getEmail() == null ? "" : req.getEmail().trim();
+        Utilisateur user = utilisateurRepository.findByEmailForUpdate(email).orElse(null);
 
-        if (!passwordEncoder.matches(req.getPassword(), user.getMotDePasse())) {
-            throw ApiException.unauthorized("Email ou mot de passe incorrect.");
+        if (user == null) {
+            travailFactice(req.getPassword());
+            throw ApiException.unauthorized(MESSAGE_CONNEXION_ECHEC);
+        }
+
+        OffsetDateTime maintenant = OffsetDateTime.now();
+        boolean verrouille = user.getLoginVerrouJusqua() != null
+                && user.getLoginVerrouJusqua().isAfter(maintenant);
+        boolean motDePasseOk = passwordEncoder.matches(
+                req.getPassword() == null ? "" : req.getPassword(), user.getMotDePasse());
+
+        if (verrouille) {
+            // Même un bon mot de passe est refusé pendant le verrouillage.
+            throw ApiException.unauthorized(MESSAGE_CONNEXION_ECHEC);
+        }
+
+        if (!motDePasseOk) {
+            int echecs = user.getLoginEchecs() + 1;
+            user.setLoginEchecs(echecs);
+            // Verrou dès 5 échecs ; chaque série supplémentaire de 5 échecs allonge la durée.
+            if (echecs >= MAX_ECHECS_CONNEXION && echecs % MAX_ECHECS_CONNEXION == 0) {
+                int minutes = dureeVerrouMinutes(echecs);
+                user.setLoginVerrouJusqua(maintenant.plusMinutes(minutes));
+                log.warn("Compte {} verrouillé {} min après {} échecs de connexion.",
+                        user.getId(), minutes, echecs);
+            }
+            utilisateurRepository.save(user);
+            throw ApiException.unauthorized(MESSAGE_CONNEXION_ECHEC);
+        }
+
+        if (user.getLoginEchecs() != 0 || user.getLoginVerrouJusqua() != null) {
+            user.setLoginEchecs(0);
+            user.setLoginVerrouJusqua(null);
+            utilisateurRepository.save(user);
         }
 
         // Plus aucun blocage lié à la vérification de l'adresse e-mail :
@@ -54,9 +139,8 @@ public class AuthService {
     /**
      * Inscription directe : le compte est créé et immédiatement actif.
      * Aucun code de vérification n'est généré ni envoyé par e-mail.
-     * Failed delivery leaves no active reset code.
-     * IntegrerCooperative (demande Président) d'enchaîner sans repasser
-     * par un écran intermédiaire.
+     * Le rôle est toujours VOYAGEUR : une demande de coopérative ne donne
+     * aucun droit de Président avant validation par l'Admin.
      */
     @Transactional
     public AuthResponse register(RegisterRequest req) {
@@ -88,102 +172,147 @@ public class AuthService {
     }
 
     /**
-     * Compatibilité avec le client mobile : génère un mot de passe temporaire
-     * et l'envoie par e-mail, sans révéler si le compte existe.
+     * Ancien point d'entrée « mot de passe oublié » (clients mobiles) : il ne change PLUS
+     * le mot de passe et n'envoie JAMAIS de mot de passe. Il redirige vers le parcours
+     * unique par code temporaire (genererNouveauCode).
      */
-    @Transactional
     public void forgotPassword(String email) {
-        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim()).orElse(null);
-        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
-            return;
-        }
-
-        String nouveauMotDePasse = genererMotDePasse();
-        if (!emailService.envoyerNouveauMotDePasse(user.getEmail(), user.getPrenom(), nouveauMotDePasse)) {
-            log.error("Le nouveau mot de passe n'a pas pu être envoyé par e-mail à {}.", user.getEmail());
-            return;
-        }
-
-        user.setMotDePasse(passwordEncoder.encode(nouveauMotDePasse));
-        user.setCodeReinitialisation(null);
-        user.setCodeReinitialisationExpiration(null);
-        utilisateurRepository.save(user);
-    }
-
-    private String genererMotDePasse() {
-        StringBuilder password = new StringBuilder(10);
-        for (int i = 0; i < 10; i++) {
-            password.append(MOT_DE_PASSE_ALPHABET.charAt(RANDOM.nextInt(MOT_DE_PASSE_ALPHABET.length())));
-        }
-        return password.toString();
+        genererNouveauCode(email);
     }
 
     /**
-     * Sends a six-digit reset code without disclosing account details.
-     * The response does not disclose account existence, role, or delivery result.
-     * Failed delivery leaves no active reset code.
+     * Demande de code de réinitialisation (bouton « Nouveau code »).
+     *
+     * Trois étapes, pour ne JAMAIS garder de connexion base ni de verrou pendant l'envoi SMTP
+     * (sinon quelques demandes parallèles sur un même compte épuiseraient le pool de 5 connexions) :
+     *  1. transaction courte avec verrou : contrôle du délai minimal et réservation de la demande ;
+     *  2. envoi de l'e-mail, hors transaction ;
+     *  3. transaction courte avec verrou : enregistrement du hash du nouveau code, seulement si l'envoi a réussi.
+     *
+     * - Deux demandes simultanées : la seconde attend le verrou de l'étape 1, voit le délai déjà
+     *   consommé et est ignorée -> un seul e-mail.
+     * - Échec d'envoi : le code précédent, encore valable, est conservé (AUTH-06).
+     * - Le délai est consommé même si l'envoi échoue, pour ne pas marteler le SMTP.
+     * - Réponse externe identique dans tous les cas (AUTH-07).
+     * Limite connue : le temps de réponse d'un compte existant (envoi SMTP synchrone) reste
+     * nettement plus long que celui d'un compte inconnu.
      */
-    @Transactional
     public void genererNouveauCode(String email) {
-        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim()).orElse(null);
-        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
-            return;
-        }
+        String adresse = email == null ? "" : email.trim();
 
-        // Invalidate the previous code even if the new delivery fails.
-        user.setCodeReinitialisation(null);
-        user.setCodeReinitialisationExpiration(null);
-        utilisateurRepository.save(user);
+        DemandeCode demande = transactionTemplate.execute(status -> reserverDemandeDeCode(adresse));
+        if (demande == null) return;
 
         String code = String.format("%06d", RANDOM.nextInt(1_000_000));
+        boolean envoye;
         try {
-            if (!emailService.envoyerCodeReinitialisation(user.getEmail(), user.getPrenom(), code)) {
-                log.warn("Reset code delivery failed.");
-                return;
-            }
+            envoye = emailService.envoyerCodeReinitialisation(demande.email(), demande.prenom(), code);
         } catch (RuntimeException e) {
-            log.warn("Ã‰chec de l'envoi du code de rÃ©initialisation : {}", e.getMessage());
+            envoye = false;
+        }
+        if (!envoye) {
+            log.warn("Code de réinitialisation non envoyé (compte {}) : l'éventuel code précédent est conservé.",
+                    demande.id());
             return;
         }
 
-        user.setCodeReinitialisation(passwordEncoder.encode(code));
-        user.setCodeReinitialisationExpiration(OffsetDateTime.now().plusMinutes(CODE_VALIDITE_MINUTES));
-        utilisateurRepository.save(user);
+        String hash = passwordEncoder.encode(code);
+        transactionTemplate.executeWithoutResult(status ->
+                utilisateurRepository.findByEmailForUpdate(demande.email()).ifPresent(u -> {
+                    u.setCodeReinitialisation(hash);
+                    u.setCodeReinitialisationExpiration(OffsetDateTime.now().plusMinutes(CODE_VALIDITE_MINUTES));
+                    u.setResetTentatives(0);
+                    utilisateurRepository.save(u);
+                }));
     }
+
+    private record DemandeCode(java.util.UUID id, String email, String prenom) {}
+
+    /** Étape 1 : renvoie null (aucun envoi) pour compte inconnu, ADMIN ou demande trop rapprochée. */
+    private DemandeCode reserverDemandeDeCode(String adresse) {
+        Utilisateur user = utilisateurRepository.findByEmailForUpdate(adresse).orElse(null);
+        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
+            // Même type de calcul BCrypt que pour un compte réel (le hash du code).
+            passwordEncoder.encode(String.format("%06d", RANDOM.nextInt(1_000_000)));
+            return null;
+        }
+        OffsetDateTime maintenant = OffsetDateTime.now();
+        OffsetDateTime derniere = user.getResetDerniereDemande();
+        if (derniere != null && derniere.plusSeconds(DELAI_MIN_ENTRE_DEMANDES_SECONDES).isAfter(maintenant)) {
+            return null;
+        }
+        user.setResetDerniereDemande(maintenant);
+        utilisateurRepository.save(user);
+        return new DemandeCode(user.getId(), user.getEmail(), user.getPrenom());
+    }
+
     /**
-     * Réinitialisation effective : le code fourni doit être le DERNIER code
-     * généré, non expiré et non encore utilisé. En cas de succès, le code
-     * est effacé — il ne peut donc pas servir une seconde fois.
+     * Réinitialisation effective : le code fourni doit être le DERNIER code généré,
+     * non expiré, non encore utilisé, et le plafond d'essais ne doit pas être atteint.
+     *
+     * Toutes les causes d'échec (compte inconnu, ADMIN, aucun code, expiré, plafond atteint,
+     * mauvais code) renvoient la même réponse : 400 « Code invalide ou expiré. » (AUTH-07).
+     * Chaque mauvais code incrémente un compteur persisté ; au {@value #MAX_TENTATIVES_CODE}e échec,
+     * le code est invalidé et une nouvelle demande est nécessaire (AUTH-03/AUTH-06).
+     * En cas de succès le code est effacé : usage unique.
+     * noRollbackFor : les compteurs d'échecs doivent survivre à l'exception levée.
      */
-    @Transactional
+    @Transactional(noRollbackFor = ApiException.class)
     public void reinitialiserMotDePasse(String email, String code, String nouveauMotDePasse) {
-        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim())
-                .orElseThrow(() -> ApiException.badRequest("Code invalide ou expiré."));
-
-        if (user.getRole() == Utilisateur.Role.ADMIN) {
-            throw ApiException.badRequest("Code invalide ou expiré.");
-        }
-
-        String hash = user.getCodeReinitialisation();
-        if (hash == null) {
-            throw ApiException.badRequest("Aucun code en cours. Cliquez sur \"Nouveau code\".");
-        }
-        if (user.getCodeReinitialisationExpiration() == null
-                || user.getCodeReinitialisationExpiration().isBefore(OffsetDateTime.now())) {
-            throw ApiException.badRequest("Ce code a expiré. Cliquez sur \"Nouveau code\".");
-        }
-        if (!passwordEncoder.matches(code == null ? "" : code.trim(), hash)) {
-            // Un ancien code ne correspond plus au hash stocké : il est donc
-            // refusé ici, sans traitement particulier.
-            throw ApiException.badRequest("Code incorrect.");
-        }
+        // Contrôle indépendant du compte : ne consomme aucun essai.
         if (nouveauMotDePasse == null || nouveauMotDePasse.length() < 6) {
             throw ApiException.badRequest("Le mot de passe doit contenir au moins 6 caractères.");
         }
 
+        String adresse = email == null ? "" : email.trim();
+        String codeSaisi = code == null ? "" : code.trim();
+
+        Utilisateur user = utilisateurRepository.findByEmailForUpdate(adresse).orElse(null);
+        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
+            travailFactice(codeSaisi);
+            throw ApiException.badRequest(MESSAGE_CODE_INVALIDE);
+        }
+
+        OffsetDateTime maintenant = OffsetDateTime.now();
+        String hash = user.getCodeReinitialisation();
+        OffsetDateTime expiration = user.getCodeReinitialisationExpiration();
+
+        if (hash == null || expiration == null) {
+            travailFactice(codeSaisi);
+            throw ApiException.badRequest(MESSAGE_CODE_INVALIDE);
+        }
+        if (expiration.isBefore(maintenant) || user.getResetTentatives() >= MAX_TENTATIVES_CODE) {
+            invaliderCode(user);
+            utilisateurRepository.save(user);
+            travailFactice(codeSaisi);
+            throw ApiException.badRequest(MESSAGE_CODE_INVALIDE);
+        }
+
+        if (!passwordEncoder.matches(codeSaisi, hash)) {
+            int essais = user.getResetTentatives() + 1;
+            if (essais >= MAX_TENTATIVES_CODE) {
+                invaliderCode(user);
+                log.warn("Code de réinitialisation invalidé après {} essais incorrects (compte {}).",
+                        MAX_TENTATIVES_CODE, user.getId());
+            } else {
+                user.setResetTentatives(essais);
+            }
+            utilisateurRepository.save(user);
+            throw ApiException.badRequest(MESSAGE_CODE_INVALIDE);
+        }
+
         user.setMotDePasse(passwordEncoder.encode(nouveauMotDePasse));
-        user.setCodeReinitialisation(null);          // usage unique
-        user.setCodeReinitialisationExpiration(null);
+        user.setMotDePasseModifieLe(OffsetDateTime.now()); // invalide les JWT déjà émis
+        invaliderCode(user); // usage unique
+        // Prouver l'accès à la boîte e-mail lève aussi un éventuel verrouillage de connexion.
+        user.setLoginEchecs(0);
+        user.setLoginVerrouJusqua(null);
         utilisateurRepository.save(user);
+    }
+
+    private void invaliderCode(Utilisateur user) {
+        user.setCodeReinitialisation(null);
+        user.setCodeReinitialisationExpiration(null);
+        user.setResetTentatives(0);
     }
 }

@@ -41,6 +41,13 @@ public interface ReservationRepository extends JpaRepository<Reservation, UUID> 
 
     Optional<Reservation> findByPlaceId(UUID placeId);
 
+    /**
+     * Réservations ACTIVES (non annulées / non refusées) liées à une place. Une même place a pu être
+     * liée à plusieurs réservations au fil du temps (annulation puis nouvelle réservation) :
+     * findByPlaceId (Optional) échouerait alors, d'où cette variante filtrée par statut.
+     */
+    List<Reservation> findByPlaceIdAndStatutIn(UUID placeId, java.util.Collection<String> statuts);
+
 
     @org.springframework.data.jpa.repository.Query(
         "SELECT r FROM Reservation r "
@@ -66,11 +73,13 @@ public interface ReservationRepository extends JpaRepository<Reservation, UUID> 
         List<Reservation> findByCooperativeIdAndStatut(UUID cooperativeId, String statut);
 
     /**
-     * Candidats au rappel WhatsApp (étape 2) : réservations confirmées, pas
-     * encore rappelées, dont le voyage n'est pas déjà passé.
+     * Candidats au rappel : réservations « Validée » dont le voyage n'est pas déjà passé.
+     * Entités chargées avec voyage, coopérative et voyageur (JOIN FETCH) : le scheduler travaille
+     * HORS transaction (pas de connexion DB retenue pendant les appels HTTP à Evolution API).
+     * Le filtre « déjà rappelé » se fait par canal (e-mail : rappelEnvoye ; WhatsApp : table rappels_whatsapp).
      */
     @org.springframework.data.jpa.repository.Query(
-        "SELECT r FROM Reservation r WHERE r.statut = 'Validée' AND r.rappelEnvoye = false "
-        + "AND r.voyage.dateDepart >= :auPlusTot")
+        "SELECT r FROM Reservation r JOIN FETCH r.voyage v LEFT JOIN FETCH v.cooperative "
+        + "JOIN FETCH r.utilisateur WHERE r.statut = 'Validée' AND v.dateDepart >= :auPlusTot")
     List<Reservation> findCandidatesRappel(java.time.LocalDate auPlusTot);
 }

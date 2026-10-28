@@ -25,6 +25,11 @@ public interface RecuRepository extends JpaRepository<Recu, UUID> {
     Optional<Recu> findByPaiementReservationId(UUID reservationId);
     Optional<Recu> findByToken(String token);
 
+    /** Même recherche avec verrou pessimiste (validation d'embarquement) : sérialise deux check-in simultanés. */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.Query("SELECT r FROM Recu r WHERE r.token = :token")
+    Optional<Recu> findByTokenForUpdate(@org.springframework.data.repository.query.Param("token") String token);
+
 
     @org.springframework.data.jpa.repository.Query(
         "SELECT r FROM Recu r "

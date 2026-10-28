@@ -55,6 +55,20 @@ public class JwtService {
         return UUID.fromString(parseClaims(token).getSubject());
     }
 
+    /**
+     * Vrai si le jeton a été émis AVANT le dernier changement de mot de passe de l'utilisateur.
+     * La date `iat` du JWT a une précision d'une seconde : on compare donc à la seconde tronquée
+     * (un jeton émis dans la même seconde que le changement reste accepté — fenêtre négligeable,
+     * nécessaire pour que la connexion qui suit immédiatement une réinitialisation fonctionne).
+     */
+    public boolean isIssuedBeforePasswordChange(String token, Utilisateur user) {
+        if (user.getMotDePasseModifieLe() == null) return false;
+        Date iat = parseClaims(token).getIssuedAt();
+        if (iat == null) return true; // jeton sans date d'émission : refusé par prudence
+        long changeSec = user.getMotDePasseModifieLe().toEpochSecond();
+        return iat.getTime() / 1000 < changeSec;
+    }
+
     public boolean isValid(String token) {
         try {
             parseClaims(token);

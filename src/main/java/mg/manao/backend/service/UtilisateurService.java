@@ -91,6 +91,7 @@ public class UtilisateurService {
                 throw ApiException.badRequest("Le mot de passe doit contenir au moins 6 caractères.");
             }
             u.setMotDePasse(passwordEncoder.encode(req.getPassword()));
+            u.setMotDePasseModifieLe(java.time.OffsetDateTime.now()); // invalide les JWT déjà émis
         }
         return toDto(utilisateurRepository.save(u));
     }

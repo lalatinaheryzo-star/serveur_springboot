@@ -27,6 +27,14 @@ import java.time.format.DateTimeFormatter;
 public class EmailService {
 
     private static final Logger log = LoggerFactory.getLogger(EmailService.class);
+
+    /** « ada@example.com » -> « a***@example.com » : les logs ne doivent pas contenir d'adresses complètes. */
+    static String masquerEmail(String email) {
+        if (email == null || email.isBlank()) return "-";
+        int at = email.indexOf('@');
+        if (at <= 0) return "***";
+        return email.charAt(0) + "***" + email.substring(at);
+    }
     private static final DateTimeFormatter HEURE_FMT = DateTimeFormatter.ofPattern("HH:mm");
 
     private final JavaMailSender mailSender;
@@ -87,7 +95,7 @@ public class EmailService {
             mailSender.send(message);
             return new EmailDiagnostic(true, "E-mail de test envoyé.");
         } catch (Exception e) {
-            log.warn("Échec de l'envoi de l'e-mail de test à {} : {}", destinataire, e.getMessage());
+            log.warn("Échec de l'envoi de l'e-mail de test à {} : {}", masquerEmail(destinataire), e.getClass().getSimpleName());
             return new EmailDiagnostic(false, "E-mail de test non envoyé.");
         }
     }
@@ -131,7 +139,7 @@ public class EmailService {
             message.setSubject("🔔 Rappel de voyage");
             message.setText(texte);
             mailSender.send(message);
-            log.info("Rappel e-mail envoyé pour la réservation {} ({}).", reservation.getId(), emailDestinataire);
+            log.info("Rappel e-mail envoyé pour la réservation {} ({}).", reservation.getId(), masquerEmail(emailDestinataire));
         } catch (Exception e) {
             log.error("Échec de l'envoi du rappel e-mail pour la réservation {} : {}",
                     reservation.getId(), e.getMessage());
@@ -176,7 +184,7 @@ public class EmailService {
             message.setSubject("✅ Confirmation de votre réservation");
             message.setText(texte);
             mailSender.send(message);
-            log.info("Confirmation e-mail envoyée pour la réservation {} ({}).", reservation.getId(), emailDestinataire);
+            log.info("Confirmation e-mail envoyée pour la réservation {} ({}).", reservation.getId(), masquerEmail(emailDestinataire));
         } catch (Exception e) {
             log.error("Échec de l'envoi de la confirmation e-mail pour la réservation {} : {}",
                     reservation.getId(), e.getMessage());
@@ -204,7 +212,7 @@ public class EmailService {
     public boolean envoyerCodeVerification(String destinataire, String prenom, String code, String lienVerification) {
         if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
             log.warn("Email non configuré (app.email.enabled=false ou GMAIL_USERNAME/GMAIL_APP_PASSWORD manquants) "
-                    + "-> code de vérification non envoyé à {}.", destinataire);
+                    + "-> code de vérification non envoyé à {}.", masquerEmail(destinataire));
             return false;
         }
 
@@ -253,12 +261,12 @@ public class EmailService {
         for (int tentative = 1; tentative <= tentativesMax; tentative++) {
             try {
                 envoi.executer();
-                log.info("E-mail envoyé à {} (tentative {}/{}).", destinataire, tentative, tentativesMax);
+                log.info("E-mail envoyé à {} (tentative {}/{}).", masquerEmail(destinataire), tentative, tentativesMax);
                 return true;
             } catch (Exception e) {
-                log.warn("Tentative {}/{} d'envoi à {} échouée : {}", tentative, tentativesMax, destinataire, e.getMessage());
+                log.warn("Tentative {}/{} d'envoi à {} échouée : {}", tentative, tentativesMax, masquerEmail(destinataire), e.getClass().getSimpleName());
                 if (tentative == tentativesMax) {
-                    log.error("Échec définitif de l'envoi à {}.", destinataire);
+                    log.error("Échec définitif de l'envoi à {}.", masquerEmail(destinataire));
                     return false;
                 }
                 try {
@@ -300,41 +308,5 @@ public class EmailService {
             message.setText(texte);
             mailSender.send(message);
         });
-    }
-    /**
-     * "Mot de passe oublié" (Président / Voyageur uniquement — jamais ADMIN,
-     * voir AuthService.forgotPassword()). Envoyé de façon SYNCHRONE, comme
-     * envoyerCodeVerification() : l'utilisateur doit savoir tout de suite si
-     * l'envoi a échoué plutôt que d'attendre en vain un e-mail.
-     *
-     * @return true si l'e-mail a été transmis avec succès au serveur SMTP.
-     */
-    public boolean envoyerNouveauMotDePasse(String destinataire, String prenom, String nouveauMotDePasse) {
-        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
-            log.warn("Email non configuré (app.email.enabled=false ou GMAIL_USERNAME/GMAIL_APP_PASSWORD manquants) "
-                    + "-> nouveau mot de passe non envoyé à {}.", destinataire);
-            return false;
-        }
-        String texte = String.format(
-                "Bonjour %s,%n%n"
-                + "Voici votre nouveau mot de passe pour vous connecter à Réservation en ligne :%n%n"
-                + "    %s%n%n"
-                + "Par sécurité, pensez à le changer dès votre prochaine connexion. "
-                + "Si vous n'êtes pas à l'origine de cette demande, contactez votre coopérative ou l'administrateur.",
-                nvl(prenom), nouveauMotDePasse
-        );
-        try {
-            SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom(from == null || from.isBlank() ? username : from);
-            message.setTo(destinataire);
-            message.setSubject("Votre nouveau mot de passe");
-            message.setText(texte);
-            mailSender.send(message);
-            log.info("Nouveau mot de passe envoyé à {}.", destinataire);
-            return true;
-        } catch (Exception e) {
-            log.error("Échec de l'envoi du nouveau mot de passe à {} : {}", destinataire, e.getMessage());
-            return false;
-        }
     }
 }
