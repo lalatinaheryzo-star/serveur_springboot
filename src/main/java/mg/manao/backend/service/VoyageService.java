@@ -104,7 +104,12 @@ public class VoyageService {
             throw ApiException.forbidden("Ce voyage n'appartient pas à votre coopérative.");
         }
         int previousCapacite = v.getCapacite();
+        int nbPlaces = placeRepository.findByVoyageIdOrderByNumeroPlaceAsc(v.getId()).size();
         applyRequest(v, req);
+        if (v.getCapacite() < nbPlaces) {
+            // Les places existantes ne sont jamais supprimées (elles peuvent être réservées).
+            throw ApiException.conflict("La capacité ne peut pas être réduite sous le nombre de places existantes (" + nbPlaces + ").");
+        }
         v = voyageRepository.save(v);
         // Si la capacité augmente, on ajoute les places manquantes (les places
         // existantes / déjà réservées ne sont jamais touchées).
@@ -123,6 +128,19 @@ public class VoyageService {
         voyageRepository.delete(v);
     }
 
+    static final java.math.BigDecimal PRIX_MAX = new java.math.BigDecimal("10000000"); // 10 M Ar
+    static final int CAPACITE_MAX = 100;
+    static final int CAPACITE_DEFAUT = 18;
+    static final int TEXTE_MAX = 100;
+    static final java.util.Set<String> STATUTS = java.util.Set.of("actif", "complet", "annulé");
+    private static final java.time.ZoneId FUSEAU = java.time.ZoneId.of("Indian/Antananarivo");
+
+    /**
+     * Valide puis applique la requête. `existant` = voyage déjà en base (modification) ou null
+     * (création). Règles : villes non vides, ≤ 100 caractères et différentes ; prix entre 0 et
+     * 10 000 000 Ar ; capacité 1..100 (défaut 18 si absente) ; statut parmi actif/complet/annulé ;
+     * date non passée (à la création, ou si la date change à la modification).
+     */
     private void applyRequest(Voyage v, VoyageRequest req) {
         if (req.getVilleDepart() == null || req.getVilleDepart().isBlank()) {
             throw ApiException.badRequest("Ville de départ requise.");
@@ -133,24 +151,63 @@ public class VoyageService {
         if (req.getDateDepart() == null || req.getDateDepart().isBlank()) {
             throw ApiException.badRequest("Date de départ requise.");
         }
+        String depart = req.getVilleDepart().trim();
+        String arrivee = req.getVilleArrivee().trim();
+        if (depart.length() > TEXTE_MAX || arrivee.length() > TEXTE_MAX) {
+            throw ApiException.badRequest("Nom de ville trop long.");
+        }
+        if (depart.equalsIgnoreCase(arrivee)) {
+            throw ApiException.badRequest("La ville de départ et la ville d'arrivée doivent être différentes.");
+        }
 
-        v.setVilleDepart(req.getVilleDepart().trim());
-        v.setVilleArrivee(req.getVilleArrivee().trim());
+        LocalDate date;
         try {
-            v.setDateDepart(LocalDate.parse(req.getDateDepart()));
+            date = LocalDate.parse(req.getDateDepart());
         } catch (Exception e) {
             throw ApiException.badRequest("Format de date de départ invalide (attendu yyyy-MM-dd).");
         }
+        boolean dateChangee = v.getDateDepart() == null || !v.getDateDepart().equals(date);
+        if (dateChangee && date.isBefore(LocalDate.now(FUSEAU))) {
+            throw ApiException.badRequest("La date de départ ne peut pas être dans le passé.");
+        }
+        LocalTime heure;
         try {
-            String heure = (req.getHeureDepart() == null || req.getHeureDepart().isBlank()) ? "00:00" : req.getHeureDepart();
-            v.setHeureDepart(LocalTime.parse(heure.length() == 5 ? heure + ":00" : heure));
+            String h = (req.getHeureDepart() == null || req.getHeureDepart().isBlank()) ? "00:00" : req.getHeureDepart();
+            heure = LocalTime.parse(h.length() == 5 ? h + ":00" : h);
         } catch (Exception e) {
             throw ApiException.badRequest("Format d'heure de départ invalide (attendu HH:mm).");
         }
-        v.setPrix(req.getPrix() != null ? req.getPrix() : java.math.BigDecimal.ZERO);
-        v.setStatut((req.getStatut() == null || req.getStatut().isBlank()) ? "actif" : req.getStatut());
-        v.setVehiculeNom((req.getVehiculeNom() == null || req.getVehiculeNom().isBlank()) ? "Sprinter" : req.getVehiculeNom());
-        v.setCapacite(req.getCapacite() != null && req.getCapacite() > 0 ? req.getCapacite() : 18);
+
+        java.math.BigDecimal prix = req.getPrix() != null ? req.getPrix() : java.math.BigDecimal.ZERO;
+        if (prix.signum() < 0 || prix.compareTo(PRIX_MAX) > 0) {
+            throw ApiException.badRequest("Prix invalide (entre 0 et 10 000 000 Ar).");
+        }
+
+        String statut = (req.getStatut() == null || req.getStatut().isBlank()) ? "actif" : req.getStatut().trim();
+        if (!STATUTS.contains(statut)) {
+            throw ApiException.badRequest("Statut de voyage invalide (actif, complet ou annulé).");
+        }
+
+        int capacite = CAPACITE_DEFAUT;
+        if (req.getCapacite() != null) {
+            if (req.getCapacite() < 1 || req.getCapacite() > CAPACITE_MAX) {
+                throw ApiException.badRequest("Capacité invalide (entre 1 et " + CAPACITE_MAX + ").");
+            }
+            capacite = req.getCapacite();
+        }
+        String vehicule = (req.getVehiculeNom() == null || req.getVehiculeNom().isBlank()) ? "Sprinter" : req.getVehiculeNom().trim();
+        if (vehicule.length() > TEXTE_MAX) {
+            throw ApiException.badRequest("Nom de véhicule trop long.");
+        }
+
+        v.setVilleDepart(depart);
+        v.setVilleArrivee(arrivee);
+        v.setDateDepart(date);
+        v.setHeureDepart(heure);
+        v.setPrix(prix);
+        v.setStatut(statut);
+        v.setVehiculeNom(vehicule);
+        v.setCapacite(capacite);
     }
 
     private void generatePlaces(Voyage v) {

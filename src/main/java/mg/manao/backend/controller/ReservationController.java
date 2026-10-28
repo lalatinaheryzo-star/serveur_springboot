@@ -40,18 +40,38 @@ public class ReservationController {
         SecurityUserDetails current = CurrentUser.get();
         if (current == null) throw ApiException.unauthorized("Non authentifié.");
 
+        // utilisateur_id est fourni par le client : il ne sert jamais à élargir l'accès.
+        UUID requested = null;
         if (utilisateurId != null && !utilisateurId.isBlank()) {
-            UUID requested = UUID.fromString(utilisateurId);
-            if (current.getRole() == Utilisateur.Role.VOYAGEUR && !requested.equals(current.getId())) {
-                throw ApiException.forbidden("Vous ne pouvez consulter que vos propres réservations.");
+            try {
+                requested = UUID.fromString(utilisateurId.trim());
+            } catch (IllegalArgumentException e) {
+                throw ApiException.badRequest("utilisateur_id invalide.");
             }
-            return reservationService.findForUtilisateur(requested, statut);
         }
 
         return switch (current.getRole()) {
-            case ADMIN -> reservationService.findAllForAdmin(statut);
-            case PRESIDENT -> reservationService.findAllForPresident(myCooperativeId(current), statut);
-            case VOYAGEUR -> reservationService.findForUtilisateur(current.getId(), statut);
+            // ADMIN : toutes les réservations, éventuellement filtrées sur un utilisateur.
+            case ADMIN -> requested != null
+                    ? reservationService.findForUtilisateur(requested, statut)
+                    : reservationService.findAllForAdmin(statut);
+            // PRESIDENT : uniquement SA coopérative ; utilisateur_id ne fait que filtrer à l'intérieur.
+            case PRESIDENT -> {
+                List<ReservationDTO> deSaCooperative =
+                        reservationService.findAllForPresident(myCooperativeId(current), statut);
+                if (requested == null) yield deSaCooperative;
+                String filtre = requested.toString();
+                yield deSaCooperative.stream()
+                        .filter(r -> filtre.equals(r.getUtilisateurId()))
+                        .toList();
+            }
+            // VOYAGEUR : uniquement les siennes ; l'id d'un autre utilisateur est refusé.
+            case VOYAGEUR -> {
+                if (requested != null && !requested.equals(current.getId())) {
+                    throw ApiException.forbidden("Vous ne pouvez consulter que vos propres réservations.");
+                }
+                yield reservationService.findForUtilisateur(current.getId(), statut);
+            }
         };
     }
 

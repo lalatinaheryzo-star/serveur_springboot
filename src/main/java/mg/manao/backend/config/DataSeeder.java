@@ -35,6 +35,10 @@ public class DataSeeder implements CommandLineRunner {
     @Value("${app.seed.enabled}")
     private boolean seedEnabled;
 
+    /** Comptes de démonstration (mots de passe publics) : JAMAIS actifs par défaut. Dev local uniquement. */
+    @Value("${app.seed.demo-enabled:false}")
+    private boolean demoEnabled;
+
     @Value("${app.seed.admin-email}")
     private String adminEmail;
 
@@ -44,7 +48,7 @@ public class DataSeeder implements CommandLineRunner {
     @Override
     @Transactional
     public void run(String... args) {
-        if (!seedEnabled) return;
+        if (!seedEnabled || !demoEnabled) return;
         if (utilisateurRepository.count() > 0) return; // déjà initialisé
 
         utilisateurRepository.save(Utilisateur.builder()
@@ -120,15 +124,7 @@ public class DataSeeder implements CommandLineRunner {
                 .statut(DemandeCooperative.Statut.PENDING)
                 .build());
 
-        System.out.println("=====================================================");
-        System.out.println(" Données de démonstration créées :");
-        System.out.println("  Admin       : " + adminEmail + " / " + adminPassword);
-        System.out.println("  Voyageur    : voyageur@demo.mg / Voyageur123!");
-        System.out.println("  Président   : president@demo.mg / President123!");
-        System.out.println("  (candidat en attente d'approbation : candidat.president@demo.mg / Candidat123!)");
-        System.out.println("  Coopérative : " + coop.getNom());
-        System.out.println("  Voyage      : Antananarivo → Antsirabe");
-        System.out.println(" ⚠️  Changez le mot de passe admin en production.");
-        System.out.println("=====================================================");
+        System.out.println("Données de DÉMO créées (SEED_DEMO_ENABLED=true) : comptes voyageur@demo.mg, "
+                + "president@demo.mg. À n'utiliser qu'en développement local, jamais en production.");
     }
 }

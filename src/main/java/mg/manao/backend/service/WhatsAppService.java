@@ -10,6 +10,8 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -57,26 +59,47 @@ public class WhatsAppService {
 
     // RestTemplate par défaut = timeouts infinis : un Evolution API injoignable
     // bloquerait le thread du scheduler indéfiniment. On borne à 5 s.
-    private final RestTemplate restTemplate = new RestTemplateBuilder()
+    RestTemplate restTemplate = new RestTemplateBuilder()
             .setConnectTimeout(Duration.ofSeconds(5))
             .setReadTimeout(Duration.ofSeconds(5))
             .build();
 
-    public boolean envoyerRappelVoyage(Reservation reservation) {
-        if (!enabled || apiUrl == null || apiUrl.isBlank() || apiKey == null || apiKey.isBlank()
-                || instance == null || instance.isBlank()) {
-            log.warn("Evolution API non configuré (app.evolution.enabled=false ou url/clé/instance manquants) "
-                    + "-> rappel non envoyé pour la réservation {}.", reservation.getId());
-            return false;
+    /** Issue d'un envoi. ENVOYE = le serveur Evolution a accepté le message (HTTP 2xx), pas une preuve de lecture. */
+    public enum Statut { ENVOYE, NON_CONFIGURE, NUMERO_INVALIDE, ECHEC }
+
+    public record ResultatEnvoi(Statut statut, String detail) {
+        public boolean estEnvoye() { return statut == Statut.ENVOYE; }
+    }
+
+    /** Vrai seulement si Evolution API est activé ET entièrement configuré. */
+    public boolean estActif() {
+        return enabled && notBlank(apiUrl) && notBlank(apiKey) && notBlank(instance);
+    }
+
+    private static boolean notBlank(String s) { return s != null && !s.isBlank(); }
+
+    /** Numéro masqué pour les logs : +261 ••• •• 12 (jamais le numéro complet). */
+    static String masquer(String numero) {
+        if (numero == null || numero.length() < 4) return "***";
+        return "***" + numero.substring(numero.length() - 2);
+    }
+
+    /**
+     * Envoie le rappel. Ne lève jamais d'exception. Un échec réseau/HTTP renvoie ECHEC avec une
+     * cause courte (classe d'erreur / code HTTP), sans numéro, clé API ni corps de réponse.
+     */
+    public ResultatEnvoi envoyerRappelVoyage(Reservation reservation) {
+        if (!estActif()) {
+            log.warn("Evolution API non configuré -> rappel non envoyé pour la réservation {}.", reservation.getId());
+            return new ResultatEnvoi(Statut.NON_CONFIGURE, "evolution non configuré");
         }
 
         Utilisateur voyageur = reservation.getUtilisateur();
         Voyage voyage = reservation.getVoyage();
-        String numero = normaliserNumero(voyageur.getTelephone());
+        String numero = normaliserNumero(voyageur == null ? null : voyageur.getTelephone());
         if (numero == null) {
-            log.warn("Numéro de téléphone absent ou invalide pour l'utilisateur {} -> rappel non envoyé (réservation {}).",
-                    voyageur.getId(), reservation.getId());
-            return false;
+            log.warn("Numéro absent ou invalide -> rappel non envoyé (réservation {}).", reservation.getId());
+            return new ResultatEnvoi(Statut.NUMERO_INVALIDE, "numéro absent ou invalide");
         }
 
         long minutesRestantes = java.time.Duration.between(
@@ -102,13 +125,22 @@ public class WhatsAppService {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             headers.set("apikey", apiKey);
-            restTemplate.exchange(url, HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
-            log.info("Rappel WhatsApp (Evolution API) envoyé pour la réservation {} ({}).", reservation.getId(), numero);
-            return true;
+            ResponseEntity<String> rep = restTemplate.exchange(url, HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+            if (rep != null && rep.getStatusCode().is2xxSuccessful()) {
+                log.info("Rappel WhatsApp accepté par Evolution API pour la réservation {} ({}).",
+                        reservation.getId(), masquer(numero));
+                return new ResultatEnvoi(Statut.ENVOYE, "HTTP " + rep.getStatusCode().value());
+            }
+            String code = rep == null ? "réponse vide" : "HTTP " + rep.getStatusCode().value();
+            log.error("Evolution API a refusé le rappel de la réservation {} : {}", reservation.getId(), code);
+            return new ResultatEnvoi(Statut.ECHEC, code);
+        } catch (RestClientResponseException e) {
+            log.error("Échec rappel WhatsApp réservation {} : HTTP {}", reservation.getId(), e.getStatusCode().value());
+            return new ResultatEnvoi(Statut.ECHEC, "HTTP " + e.getStatusCode().value());
         } catch (Exception e) {
-            log.error("Échec de l'envoi du rappel WhatsApp (Evolution API) pour la réservation {} : {}",
-                    reservation.getId(), e.getMessage());
-            return false;
+            // On ne logge que la classe de l'exception : le message peut contenir l'URL ou des données.
+            log.error("Échec rappel WhatsApp réservation {} : {}", reservation.getId(), e.getClass().getSimpleName());
+            return new ResultatEnvoi(Statut.ECHEC, e.getClass().getSimpleName());
         }
     }
 

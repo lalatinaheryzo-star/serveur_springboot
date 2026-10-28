@@ -69,6 +69,11 @@ public class PaiementController {
             if (!reservation.getUtilisateur().getId().equals(current.getId())) {
                 throw ApiException.forbidden("Vous ne pouvez payer que votre propre réservation.");
             }
+        } else if (current.getRole() == Utilisateur.Role.PRESIDENT) {
+            // Un Président n'enregistre un paiement que pour une réservation de SA coopérative
+            // (lève 403 sinon).
+            Cooperative coop = cooperativeService.getEntityForPresident(current.getId());
+            reservationService.findByIdForPresident(UUID.fromString(req.getReservationId()), coop);
         }
         return ResponseEntity.status(201).body(paiementService.create(req));
     }

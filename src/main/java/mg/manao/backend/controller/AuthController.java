@@ -43,8 +43,10 @@ public class AuthController {
     }
 
     /**
-     * Compatibilité avec les clients mobiles utilisant l'ancien parcours :
-     * réponse identique que l'adresse soit connue ou non.
+     * Compatibilité avec les clients mobiles utilisant l'ancien parcours.
+     * Ne change PLUS le mot de passe et n'en envoie plus : redirige vers le
+     * parcours unique par code temporaire (identique à /auth/password/nouveau-code).
+     * Réponse identique que l'adresse soit connue ou non.
      */
     @PostMapping("/forgot-password")
     public ResponseEntity<Void> forgotPassword(@Valid @RequestBody ForgotPasswordRequest req) {

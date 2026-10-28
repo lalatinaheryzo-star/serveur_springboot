@@ -6,6 +6,7 @@ import mg.manao.backend.dto.ReservationRequest;
 import mg.manao.backend.dto.UpdateReservationStatutRequest;
 import mg.manao.backend.entity.*;
 import mg.manao.backend.exception.ApiException;
+import mg.manao.backend.repository.PaiementRepository;
 import mg.manao.backend.repository.PlaceRepository;
 import mg.manao.backend.repository.ReservationRepository;
 import mg.manao.backend.repository.UtilisateurRepository;
@@ -15,6 +16,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -26,6 +29,20 @@ public class ReservationService {
     private final UtilisateurRepository utilisateurRepository;
     private final PlaceRepository placeRepository;
     private final EmailService emailService;
+    private final PlaceService placeService;
+    private final PaiementRepository paiementRepository;
+    private final RecuService recuService;
+
+    /**
+     * Transitions autorisées du statut d'une réservation. « Refusée » et « Annulée » sont finales :
+     * la place est alors libérée et peut être réservée par quelqu'un d'autre, on ne « ressuscite »
+     * donc jamais une réservation (sinon deux réservations actives sur la même place).
+     */
+    static final Map<String, Set<String>> TRANSITIONS = Map.of(
+            Reservation.STATUT_EN_ATTENTE, Set.of(Reservation.STATUT_VALIDEE, Reservation.STATUT_REFUSEE, Reservation.STATUT_ANNULEE),
+            Reservation.STATUT_VALIDEE, Set.of(Reservation.STATUT_ANNULEE),
+            Reservation.STATUT_REFUSEE, Set.of(),
+            Reservation.STATUT_ANNULEE, Set.of());
 
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
 
@@ -106,53 +123,50 @@ public class ReservationService {
         if (req.getUtilisateurId() == null || req.getUtilisateurId().isBlank()) {
             throw ApiException.badRequest("utilisateur_id requis.");
         }
-        Voyage voyage = voyageRepository.findById(UUID.fromString(req.getVoyageId()))
-                .orElseThrow(() -> ApiException.notFound("Voyage introuvable."));
-        Utilisateur utilisateur = utilisateurRepository.findById(UUID.fromString(req.getUtilisateurId()))
-                .orElseThrow(() -> ApiException.notFound("Utilisateur introuvable."));
-
-        Reservation r = Reservation.builder()
-                .voyage(voyage)
-                .utilisateur(utilisateur)
-                .numeroPlace(req.getNumeroPlace())
-                .statut(Reservation.STATUT_EN_ATTENTE)
-                .build();
-
-        if (req.getNumeroPlace() != null) {
-            placeRepository.findByVoyageIdAndNumeroPlace(voyage.getId(), req.getNumeroPlace())
-                    .ifPresent(place -> {
-                        if (!"disponible".equals(place.getStatut())) {
-                            throw ApiException.conflict("Cette place n'est plus disponible.");
-                        }
-                        place.setStatut("reservee");
-                        placeRepository.save(place);
-                        r.setPlace(place);
-                    });
+        if (req.getNumeroPlace() == null) {
+            throw ApiException.badRequest("numero_place requis.");
         }
-
-        return toDto(reservationRepository.save(r));
+        UUID voyageId;
+        UUID utilisateurId;
+        try {
+            voyageId = UUID.fromString(req.getVoyageId().trim());
+            utilisateurId = UUID.fromString(req.getUtilisateurId().trim());
+        } catch (IllegalArgumentException e) {
+            throw ApiException.badRequest("Identifiant invalide.");
+        }
+        voyageRepository.findById(voyageId).orElseThrow(() -> ApiException.notFound("Voyage introuvable."));
+        Place place = placeRepository.findByVoyageIdAndNumeroPlace(voyageId, req.getNumeroPlace())
+                .orElseThrow(() -> ApiException.notFound("Place introuvable pour ce voyage."));
+        // Même chemin (verrou pessimiste, contrôles voyage annulé/parti) que POST /places/{id}/reserver.
+        return toDto(placeService.reserverPlace(place.getId(), utilisateurId));
     }
 
     @Transactional
     public ReservationDTO updateStatut(UUID id, UpdateReservationStatutRequest req, UUID presidentId) {
         Reservation r = reservationRepository.findByIdForPresidentWithDetails(id, presidentId)
                 .orElseThrow(() -> ApiException.forbidden("Cette réservation n'appartient pas à votre coopérative."));
-        String statut = req.getStatut();
-        if (!List.of(Reservation.STATUT_EN_ATTENTE, Reservation.STATUT_VALIDEE,
-                Reservation.STATUT_REFUSEE, Reservation.STATUT_ANNULEE).contains(statut)) {
+        String statut = req.getStatut() == null ? "" : req.getStatut().trim();
+        if (!TRANSITIONS.containsKey(statut)) {
             throw ApiException.badRequest("Statut de réservation invalide : " + statut);
         }
-        r.setStatut(statut);
-
-        // Refus/annulation -> la place redevient disponible.
-        if ((Reservation.STATUT_REFUSEE.equals(statut) || Reservation.STATUT_ANNULEE.equals(statut))
-                && r.getPlace() != null) {
-            r.getPlace().setStatut("disponible");
+        String courant = r.getStatut();
+        boolean changement = !statut.equals(courant);
+        if (changement && !TRANSITIONS.getOrDefault(courant, Set.of()).contains(statut)) {
+            throw ApiException.conflict("Changement de statut non autorisé : " + courant + " → " + statut + ".");
+        }
+        if (changement) {
+            r.setStatut(statut);
+            // Refus/annulation -> la place redevient disponible et le lien est détaché.
+            if (Reservation.STATUT_REFUSEE.equals(statut) || Reservation.STATUT_ANNULEE.equals(statut)) {
+                placeService.rendrePlaceDisponible(r);
+            }
         }
 
         Reservation saved = reservationRepository.save(r);
 
-        if (Reservation.STATUT_VALIDEE.equals(statut)) {
+        if (changement && Reservation.STATUT_VALIDEE.equals(statut)) {
+            // Si le paiement est déjà « Réussi », le reçu est généré maintenant (idempotent).
+            paiementRepository.findByReservationId(saved.getId()).ifPresent(recuService::ensureRecuForPaiement);
             // On force le chargement des relations paresseuses (voyage, utilisateur)
             // AVANT l'appel asynchrone : l'e-mail part sur un thread séparé, une
             // fois cette transaction terminée, donc la session Hibernate ne sera
@@ -168,9 +182,8 @@ public class ReservationService {
     @Transactional
     public void delete(UUID id) {
         Reservation r = getEntity(id);
-        if (r.getPlace() != null) {
-            r.getPlace().setStatut("disponible");
-        }
+        // Une réservation encore active libère sa place ; une réservation déjà annulée/refusée n'en a plus.
+        placeService.rendrePlaceDisponible(r);
         reservationRepository.deleteById(id);
     }
 }

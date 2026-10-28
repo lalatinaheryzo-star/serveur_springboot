@@ -8,26 +8,32 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.List;
 
+/**
+ * Déclenche les rappels de voyage (e-mail + WhatsApp). Volontairement SANS transaction englobante :
+ * les appels HTTP vers Evolution API ne doivent pas retenir une connexion du pool (5 connexions).
+ * Un canal en échec n'empêche pas l'autre ni les réservations suivantes.
+ */
 @Service
 @RequiredArgsConstructor
 public class RappelSchedulerService {
 
     private static final Logger log = LoggerFactory.getLogger(RappelSchedulerService.class);
+    private static final ZoneId FUSEAU = ZoneId.of("Indian/Antananarivo");
 
     private final ReservationRepository reservationRepository;
     private final RappelService rappelService;
     private final EmailService emailService;
+    private final RappelWhatsAppService rappelWhatsAppService;
 
     @Scheduled(fixedRate = 60_000)
-    @Transactional
     public void verifierEtEnvoyerRappels() {
-        List<Reservation> candidates = reservationRepository.findCandidatesRappel(LocalDate.now());
+        List<Reservation> candidates = reservationRepository.findCandidatesRappel(LocalDate.now(FUSEAU));
 
         for (Reservation r : candidates) {
             try {
@@ -35,17 +41,19 @@ public class RappelSchedulerService {
                 if (coop == null || !coop.isRappelActif()) continue;
                 if (!rappelService.estMomentDenvoyerLeRappel(r.getVoyage(), coop)) continue;
 
-                r.setRappelEnvoye(true);
-                r.setRappelEnvoyeAt(OffsetDateTime.now());
-                reservationRepository.save(r);
+                // Canal e-mail : envoi asynchrone (non confirmable ici) ; le drapeau signifie « mis en file ».
+                if (!r.isRappelEnvoye()) {
+                    r.setRappelEnvoye(true);
+                    r.setRappelEnvoyeAt(OffsetDateTime.now());
+                    reservationRepository.save(r);
+                    emailService.envoyerRappelVoyage(r);
+                }
 
-                // Idem que pour la confirmation de réservation : on force le
-                // chargement de l'utilisateur avant l'appel @Async (le voyage est
-                // déjà initialisé via r.getVoyage().getCooperative() ci-dessus).
-                if (r.getUtilisateur() != null) r.getUtilisateur().getEmail();
-                emailService.envoyerRappelVoyage(r);
+                // Canal WhatsApp : trace en base, marqué « envoyé » seulement si Evolution a accepté.
+                rappelWhatsAppService.envoyerSiNecessaire(r);
             } catch (Exception e) {
-                log.error("Erreur lors du traitement du rappel pour la réservation {} : {}", r.getId(), e.getMessage());
+                log.error("Erreur lors du traitement du rappel pour la réservation {} : {}",
+                        r.getId(), e.getClass().getSimpleName());
             }
         }
     }

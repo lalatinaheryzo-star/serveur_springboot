@@ -27,8 +27,8 @@ import java.util.List;
  * Publiques (aucun token requis) :
  *   - POST /auth/login, /auth/register, /auth/password/nouveau-code, /auth/password/reinitialiser
  *   - GET  /voyages, /voyages/{id}, /voyages/{id}/places, /cooperatives
- *   - GET  /recus/verify/{token}, POST /recus/verify/{token}/checkin
- *       (page scannée par un agent de gare, sans compte — §17 de la spec)
+ *   - GET  /recus/verify/{token} (page scannée, données minimales)
+ *   (le check-in POST /recus/verify/{token}/checkin exige une authentification)
  *
  * Authentifiées (contrôle fin fait dans les services/contrôleurs) :
  *   - GET  /auth/me
@@ -108,8 +108,10 @@ public class SecurityConfig {
                                                    "/auth/password/nouveau-code",
                                                    "/auth/password/reinitialiser").permitAll()
                 .requestMatchers(HttpMethod.GET, "/voyages", "/voyages/**", "/cooperatives").permitAll()
+                // Vérification publique en lecture seule (données minimales) ; le check-in
+                // (POST /recus/verify/{token}/checkin) exige une authentification et est
+                // réservé au Président concerné / ADMIN dans RecuService.
                 .requestMatchers(HttpMethod.GET, "/recus/verify/**").permitAll()
-                .requestMatchers(HttpMethod.POST, "/recus/verify/**").permitAll()
 
                 // ── Président uniquement (§4/§7) ─────────────
                 .requestMatchers(HttpMethod.POST,   "/voyages", "/cooperatives").hasRole("PRESIDENT")
@@ -122,6 +124,10 @@ public class SecurityConfig {
                 .requestMatchers("/utilisateurs/**").hasRole("ADMIN")
                 .requestMatchers("/notifications/**").hasRole("ADMIN")
                 .requestMatchers("/dashboard/**").hasRole("ADMIN")
+                // Diagnostic SMTP / envoi d'e-mails de test (EmailDiagnosticController) :
+                // sans cette règle, tout compte connecté pouvait faire envoyer des e-mails
+                // à n'importe quelle adresse via le Gmail de la plateforme.
+                .requestMatchers("/diagnostic/**").hasRole("ADMIN")
                 .requestMatchers(HttpMethod.DELETE, "/cooperatives/**").hasRole("ADMIN")
                 .requestMatchers(HttpMethod.DELETE, "/reservations/**").hasRole("ADMIN")
                 .requestMatchers(HttpMethod.DELETE, "/paiements/**").hasRole("ADMIN")
