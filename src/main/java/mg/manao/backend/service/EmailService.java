@@ -3,7 +3,11 @@ package mg.manao.backend.service;
 import mg.manao.backend.entity.Reservation;
 import mg.manao.backend.entity.Utilisateur;
 import mg.manao.backend.entity.Voyage;
+import jakarta.mail.AuthenticationFailedException;
+import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
+import org.springframework.mail.MailAuthenticationException;
+import org.springframework.mail.MailSendException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -14,7 +18,18 @@ import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import javax.net.ssl.SSLException;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Envoi du rappel de voyage par e-mail (Gmail SMTP via spring-boot-starter-mail).
@@ -27,6 +42,7 @@ import java.time.format.DateTimeFormatter;
 public class EmailService {
 
     private static final Logger log = LoggerFactory.getLogger(EmailService.class);
+    private static final int MAX_DIAGNOSTIC_CAUSES = 12;
 
     /** « ada@example.com » -> « a***@example.com » : les logs ne doivent pas contenir d'adresses complètes. */
     static String masquerEmail(String email) {
@@ -73,7 +89,7 @@ public class EmailService {
             }
             return new EmailDiagnostic(false, "Le fournisseur SMTP ne permet pas le test de connexion.");
         } catch (Exception e) {
-            log.warn("Échec du diagnostic SMTP : {}", e.getMessage());
+            log.warn("Échec du diagnostic SMTP : {}", diagnosticSmtpCause(e));
             return new EmailDiagnostic(false, "Connexion SMTP impossible.");
         }
     }
@@ -142,7 +158,7 @@ public class EmailService {
             log.info("Rappel e-mail envoyé pour la réservation {} ({}).", reservation.getId(), masquerEmail(emailDestinataire));
         } catch (Exception e) {
             log.error("Échec de l'envoi du rappel e-mail pour la réservation {} : {}",
-                    reservation.getId(), e.getMessage());
+                    reservation.getId(), diagnosticSmtpCause(e));
         }
     }
 
@@ -187,7 +203,7 @@ public class EmailService {
             log.info("Confirmation e-mail envoyée pour la réservation {} ({}).", reservation.getId(), masquerEmail(emailDestinataire));
         } catch (Exception e) {
             log.error("Échec de l'envoi de la confirmation e-mail pour la réservation {} : {}",
-                    reservation.getId(), e.getMessage());
+                    reservation.getId(), diagnosticSmtpCause(e));
         }
     }
 
@@ -264,9 +280,11 @@ public class EmailService {
                 log.info("E-mail envoyé à {} (tentative {}/{}).", masquerEmail(destinataire), tentative, tentativesMax);
                 return true;
             } catch (Exception e) {
-                log.warn("Tentative {}/{} d'envoi à {} échouée : {}", tentative, tentativesMax, masquerEmail(destinataire), e.getClass().getSimpleName());
+                log.warn("Tentative {}/{} d'envoi à {} échouée : {}",
+                        tentative, tentativesMax, masquerEmail(destinataire), diagnosticSmtpCause(e));
                 if (tentative == tentativesMax) {
-                    log.error("Échec définitif de l'envoi à {}.", masquerEmail(destinataire));
+                    log.error("Échec définitif de l'envoi à {} : {}",
+                            masquerEmail(destinataire), diagnosticSmtpCause(e));
                     return false;
                 }
                 try {
@@ -278,6 +296,54 @@ public class EmailService {
             }
         }
         return false;
+    }
+
+    static String diagnosticSmtpCause(Throwable failure) {
+        if (failure == null) return "cause unavailable";
+
+        Deque<Throwable> pending = new ArrayDeque<>();
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        List<String> causes = new ArrayList<>();
+        pending.add(failure);
+
+        while (!pending.isEmpty() && causes.size() < MAX_DIAGNOSTIC_CAUSES) {
+            Throwable current = pending.removeFirst();
+            if (!visited.add(current)) continue;
+
+            String type = current.getClass().getSimpleName();
+            String category = categorieSmtp(current);
+            causes.add(category == null ? type : type + " (" + category + ")");
+
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) pending.addLast(cause);
+
+            if (current instanceof MessagingException messagingException) {
+                Exception nextException = messagingException.getNextException();
+                if (nextException != null && nextException != current) pending.addLast(nextException);
+            }
+
+            if (current instanceof MailSendException mailSendException
+                    && mailSendException.getFailedMessages() != null) {
+                mailSendException.getFailedMessages().values().stream()
+                        .filter(exception -> exception != null && exception != current)
+                        .forEach(pending::addLast);
+            }
+        }
+
+        if (!pending.isEmpty()) causes.add("cause chain truncated");
+        return String.join(" -> ", causes);
+    }
+
+    private static String categorieSmtp(Throwable failure) {
+        if (failure instanceof MailAuthenticationException
+                || failure instanceof AuthenticationFailedException) {
+            return "SMTP authentication rejected";
+        }
+        if (failure instanceof ConnectException) return "connection refused";
+        if (failure instanceof SocketTimeoutException) return "timeout";
+        if (failure instanceof SSLException) return "TLS/SSL failure";
+        if (failure instanceof UnknownHostException) return "DNS resolution failure";
+        return null;
     }
 
     @FunctionalInterface
