@@ -5,31 +5,37 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.core.read.ListAppender;
 import jakarta.mail.AuthenticationFailedException;
 import jakarta.mail.MessagingException;
+import mg.manao.backend.exception.ApiException;
 import org.junit.jupiter.api.Test;
-import org.springframework.mail.MailSendException;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.SimpleMailMessage;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.mail.SimpleMailMessage;
+import org.springframework.mail.javamail.JavaMailSender;
 
 import javax.net.ssl.SSLHandshakeException;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doThrow;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class EmailServiceTest {
 
     @Test
     void smtpDiagnosticFindsNestedCausesAndUsesSafeCategories() throws Exception {
         MessagingException smtpFailure = new MessagingException(
-                "recipient=ada@example.com reset-code=381624 app-password=private-value");
+                "recipient=ada@example.com reset-code=381624 app-password-sensitive");
         smtpFailure.setNextException(new AuthenticationFailedException(
-                "recipient=ada@example.com reset-code=381624 app-password=private-value"));
+                "recipient=ada@example.com reset-code=381624 app-password-sensitive"));
 
         String authentication = EmailService.diagnosticSmtpCause(smtpFailure);
         String connectionRefused = EmailService.diagnosticSmtpCause(
@@ -52,47 +58,72 @@ class EmailServiceTest {
     }
 
     @Test
-    void smtpFailureLogsOnlyMaskedAddressAndSanitizedCause() {
+    void resetNeverFallsBackToSmtpWhenGmailApiIsDisabled() {
+        String recipient = "ada.sensitive@gmail.com";
+        JavaMailSender mailSender = mock(JavaMailSender.class);
+        GmailApiSender gmailApi = mock(GmailApiSender.class);
+        EmailService emailService = new EmailService(mailSender, gmailApi);
+        when(gmailApi.isEnabled()).thenReturn(false);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> emailService.envoyerCodeReinitialisation(recipient, "Ada", "927351"));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatus());
+        verify(mailSender, never()).send(any(SimpleMailMessage.class));
+    }
+
+    @Test
+    void invalidOAuthConfigurationReturnsControlledServiceUnavailable() {
+        JavaMailSender mailSender = mock(JavaMailSender.class);
+        GmailApiSender gmailApi = mock(GmailApiSender.class);
+        EmailService emailService = new EmailService(mailSender, gmailApi);
+        when(gmailApi.isEnabled()).thenReturn(true);
+        when(gmailApi.isConfigured()).thenReturn(true);
+        when(gmailApi.verifierJeton()).thenReturn(
+                new GmailApiSender.Resultat(false, false, "OAuth invalid_grant"));
+
+        ApiException error = assertThrows(ApiException.class,
+                emailService::verifierConfigurationReinitialisation);
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatus());
+        verify(gmailApi, never()).envoyer(any(String.class), any(String.class), any(String.class));
+        verify(mailSender, never()).send(any(SimpleMailMessage.class));
+    }
+
+    @Test
+    void gmailApiFailureDoesNotFallbackToSmtpAndDoesNotLogSecretsOrCode() {
         String recipient = "ada.sensitive@gmail.com";
         String resetCode = "927351";
-        String appPassword = "app-password-sensitive";
-        String exceptionMessage = "recipient=" + recipient
-                + " reset-code=" + resetCode
-                + " app-password=" + appPassword
-                + " email-body=private-content";
-        MessagingException smtpFailure = new MessagingException(exceptionMessage);
-        smtpFailure.setNextException(new AuthenticationFailedException(exceptionMessage));
-
+        String refreshToken = "private-refresh-token";
         JavaMailSender mailSender = mock(JavaMailSender.class);
-        doThrow(new MailSendException(exceptionMessage, smtpFailure))
-                .when(mailSender).send(any(SimpleMailMessage.class));
-
-        EmailService emailService = new EmailService(mailSender);
-        ReflectionTestUtils.setField(emailService, "enabled", true);
-        ReflectionTestUtils.setField(emailService, "username", "sender@gmail.com");
-        ReflectionTestUtils.setField(emailService, "password", appPassword);
-        ReflectionTestUtils.setField(emailService, "from", "sender@gmail.com");
+        GmailApiSender gmailApi = mock(GmailApiSender.class);
+        when(gmailApi.isEnabled()).thenReturn(true);
+        when(gmailApi.isConfigured()).thenReturn(true);
+        when(gmailApi.envoyer(eq(recipient), any(String.class), any(String.class)))
+                .thenReturn(new GmailApiSender.Resultat(false, false,
+                        "HTTP 403 (permission Gmail refusée)"));
+        EmailService emailService = new EmailService(mailSender, gmailApi);
 
         Logger logger = (Logger) LoggerFactory.getLogger(EmailService.class);
         Level previousLevel = logger.getLevel();
         ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender = new ListAppender<>();
         appender.start();
-        logger.setLevel(Level.WARN);
+        logger.setLevel(Level.ERROR);
         logger.addAppender(appender);
 
         try {
             assertFalse(emailService.envoyerCodeReinitialisation(recipient, "Ada", resetCode));
+            verify(mailSender, never()).send(any(SimpleMailMessage.class));
+            verify(gmailApi).envoyer(eq(recipient), any(String.class), contains(resetCode));
 
             String logs = appender.list.stream()
                     .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
                     .reduce("", (left, right) -> left + "\n" + right);
-
+            assertTrue(logs.contains("HTTP 403"));
             assertTrue(logs.contains("a***@gmail.com"));
-            assertTrue(logs.contains("SMTP authentication rejected"));
             assertFalse(logs.contains(recipient));
             assertFalse(logs.contains(resetCode));
-            assertFalse(logs.contains(appPassword));
-            assertFalse(logs.contains("private-content"));
+            assertFalse(logs.contains(refreshToken));
         } finally {
             logger.detachAppender(appender);
             appender.stop();

@@ -183,7 +183,7 @@ public class AuthService {
     /**
      * Demande de code de réinitialisation (bouton « Nouveau code »).
      *
-     * Trois étapes, pour ne JAMAIS garder de connexion base ni de verrou pendant l'envoi SMTP
+     * Trois étapes, pour ne JAMAIS garder de connexion base ni de verrou pendant l'envoi Gmail API
      * (sinon quelques demandes parallèles sur un même compte épuiseraient le pool de 5 connexions) :
      *  1. transaction courte avec verrou : contrôle du délai minimal et réservation de la demande ;
      *  2. envoi de l'e-mail, hors transaction ;
@@ -192,12 +192,13 @@ public class AuthService {
      * - Deux demandes simultanées : la seconde attend le verrou de l'étape 1, voit le délai déjà
      *   consommé et est ignorée -> un seul e-mail.
      * - Échec d'envoi : le code précédent, encore valable, est conservé (AUTH-06).
-     * - Le délai est consommé même si l'envoi échoue, pour ne pas marteler le SMTP.
+     * - Le délai est consommé même si l'envoi échoue, pour ne pas marteler Gmail API.
      * - Réponse externe identique dans tous les cas (AUTH-07).
-     * Limite connue : le temps de réponse d'un compte existant (envoi SMTP synchrone) reste
+     * Limite connue : le temps de réponse d'un compte existant (envoi Gmail API synchrone) reste
      * nettement plus long que celui d'un compte inconnu.
      */
     public void genererNouveauCode(String email) {
+        emailService.verifierConfigurationReinitialisation();
         String adresse = email == null ? "" : email.trim();
 
         DemandeCode demande = transactionTemplate.execute(status -> reserverDemandeDeCode(adresse));
@@ -207,7 +208,11 @@ public class AuthService {
         boolean envoye;
         try {
             envoye = emailService.envoyerCodeReinitialisation(demande.email(), demande.prenom(), code);
+        } catch (ApiException e) {
+            throw e;
         } catch (RuntimeException e) {
+            log.error("Erreur technique pendant l'envoi du code de réinitialisation (type {}).",
+                    e.getClass().getSimpleName());
             envoye = false;
         }
         if (!envoye) {

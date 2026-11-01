@@ -30,6 +30,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -117,8 +118,23 @@ class AuthServiceTest {
         assertTrue(u.getCodeReinitialisationExpiration().isAfter(OffsetDateTime.now()));
         assertEquals(0, u.getResetTentatives());
         assertNotNull(u.getResetDerniereDemande());
+        verify(emailService).verifierConfigurationReinitialisation();
         // une sauvegarde par transaction courte : réservation de la demande, puis enregistrement du code
         verify(utilisateurRepository, org.mockito.Mockito.times(2)).save(u);
+    }
+
+    @Test
+    void gmailConfigurationFailureIsReportedBeforeLookingUpAnAccount() {
+        doThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Le service de réinitialisation est temporairement indisponible."))
+                .when(emailService).verifierConfigurationReinitialisation();
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> authService.genererNouveauCode("ada@example.com"));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatus());
+        verify(utilisateurRepository, never()).findByEmailForUpdate(anyString());
+        verify(emailService, never()).envoyerCodeReinitialisation(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -133,6 +149,9 @@ class AuthServiceTest {
         assertEquals("hash:111111", u.getCodeReinitialisation());
         assertEquals(expirationAvant, u.getCodeReinitialisationExpiration());
         assertEquals(2, u.getResetTentatives());
+
+        authService.reinitialiserMotDePasse("ada@example.com", "111111", "nouveau-mdp");
+        assertEquals("hash:nouveau-mdp", u.getMotDePasse());
     }
 
     @Test

@@ -1,6 +1,7 @@
 package mg.manao.backend.service;
 
 import mg.manao.backend.entity.Reservation;
+import mg.manao.backend.exception.ApiException;
 import jakarta.mail.AuthenticationFailedException;
 import jakarta.mail.MessagingException;
 import org.springframework.mail.MailAuthenticationException;
@@ -12,6 +13,7 @@ import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.stereotype.Service;
+import org.springframework.http.HttpStatus;
 
 import javax.net.ssl.SSLException;
 import java.net.ConnectException;
@@ -26,15 +28,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * E-mails de l'application : UNIQUEMENT le code de reinitialisation du mot de passe.
- * (Pas d'e-mail de verification a l'inscription, de confirmation de reservation ni de
- * rappel de voyage : les rappels passent par WhatsApp.)
- *
- * Deux canaux d'envoi, choisis explicitement (jamais de bascule silencieuse) :
- *  - GMAIL_API_ENABLED=true  -> API Gmail en HTTPS (indispensable sur Render Free,
- *                               qui bloque SMTP 25/465/587) ; EMAIL_ENABLED n'est pas consulte ;
- *  - sinon                   -> SMTP (spring-boot-starter-mail), soumis a EMAIL_ENABLED
- *                               et a GMAIL_USERNAME / GMAIL_APP_PASSWORD, comme avant.
+ * Gmail API est exclusivement utilisée pour les codes de réinitialisation.
+ * SMTP reste disponible uniquement pour les diagnostics et e-mails de test administratifs.
+ * Les rappels de voyage passent par WhatsApp.
  *
  * Aucun secret et jamais le code de reinitialisation dans les logs.
  */
@@ -167,65 +163,59 @@ public class EmailService {
      * @return true seulement si le fournisseur a accepte le message.
      */
     public boolean envoyerCodeReinitialisation(String destinataire, String prenom, String code) {
+        verifierConfigurationGmailApi();
         String texte = String.format(
-                "Bonjour %s,%n%nVotre code de reinitialisation est : %s%n%n"
-                        + "Il est valable 30 minutes et ne peut etre utilise qu'une seule fois. "
-                        + "Si vous n'etes pas a l'origine de cette demande, ignorez cet e-mail.",
+                "Bonjour %s,%n%n"
+                        + "Vous avez demandé la réinitialisation du mot de passe de votre compte "
+                        + "Réservation en ligne à Madagascar.%n%n"
+                        + "Votre code de vérification :%n%n"
+                        + "    %s%n%n"
+                        + "Ce code expire dans 30 minutes et ne peut être utilisé qu'une seule fois.%n"
+                        + "Si vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail "
+                        + "et ne communiquez ce code à personne.%n%n"
+                        + "Réservation en ligne à Madagascar",
                 nvl(prenom), code);
 
-        if (gmailApi.isEnabled()) {
-            return envoyerParGmailApi(destinataire, texte);
-        }
-        if (!smtpConfigure()) {
-            log.warn("Email non configure -> reset code not sent.");
-            return false;
-        }
-        return envoyerParSmtp(destinataire, texte);
-    }
-
-    private boolean envoyerParGmailApi(String destinataire, String texte) {
-        if (!gmailApi.isConfigured()) {
-            log.error("Gmail API activee mais incomplete (variables manquantes : {}) -> code non envoye.",
-                    gmailApi.variablesManquantes());
-            return false;
-        }
-        GmailApiSender.Resultat r = gmailApi.envoyer(destinataire, "Votre code de reinitialisation", texte);
-        if (r.succes()) {
-            log.info("Code de reinitialisation envoye via Gmail API a {} ({}).", masquerEmail(destinataire), r.detail());
+        GmailApiSender.Resultat resultat = gmailApi.envoyer(destinataire,
+                "Réinitialisation de votre mot de passe – Réservation en ligne à Madagascar", texte);
+        if (resultat.succes()) {
+            log.info("Gmail API a accepté le code de réinitialisation pour {}.",
+                    masquerEmail(destinataire));
             return true;
         }
-        log.error("Echec definitif de l'envoi Gmail API a {} : {}", masquerEmail(destinataire), r.detail());
+        log.error("Échec d'envoi du code de réinitialisation via Gmail API pour {} : {}.",
+                masquerEmail(destinataire), resultat.detail());
         return false;
     }
 
-    private boolean envoyerParSmtp(String destinataire, String texte) {
-        final int tentativesMax = 2;
-        for (int tentative = 1; tentative <= tentativesMax; tentative++) {
-            try {
-                SimpleMailMessage message = new SimpleMailMessage();
-                message.setFrom(from == null || from.isBlank() ? username : from);
-                message.setTo(destinataire);
-                message.setSubject("Votre code de reinitialisation");
-                message.setText(texte);
-                mailSender.send(message);
-                log.info("E-mail envoyé à {} (tentative {}/{}).", masquerEmail(destinataire), tentative, tentativesMax);
-                return true;
-            } catch (Exception e) {
-                log.warn("Tentative {}/{} d'envoi à {} échouée : {}",
-                        tentative, tentativesMax, masquerEmail(destinataire), diagnosticSmtpCause(e));
-                if (tentative == tentativesMax) {
-                    log.error("Échec définitif de l'envoi à {} : {}", masquerEmail(destinataire), diagnosticSmtpCause(e));
-                    return false;
-                }
-                try {
-                    Thread.sleep(800);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    return false;
-                }
-            }
+    /**
+     * Vérifie la configuration avant toute recherche de compte afin que les erreurs
+     * techniques ne changent pas la réponse générique selon l'existence de l'adresse.
+     */
+    public void verifierConfigurationReinitialisation() {
+        verifierConfigurationGmailApi();
+        GmailApiSender.Resultat resultat = gmailApi.verifierJeton();
+        if (!resultat.succes()) {
+            log.error("Gmail API indisponible pour la réinitialisation : {}.", resultat.detail());
+            throw erreurGmailIndisponible();
         }
-        return false;
+    }
+
+    private void verifierConfigurationGmailApi() {
+        if (!gmailApi.isEnabled()) {
+            log.error("Gmail API désactivée : réinitialisation du mot de passe indisponible.");
+            throw erreurGmailIndisponible();
+        }
+        if (!gmailApi.isConfigured()) {
+            log.error("Configuration Gmail API incomplète (variables manquantes : {}).",
+                    gmailApi.variablesManquantes());
+            throw erreurGmailIndisponible();
+        }
+    }
+
+    private static ApiException erreurGmailIndisponible() {
+        return new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Le service de réinitialisation est temporairement indisponible.");
     }
 
     // ------------------------------------------------------------ diagnostic
@@ -278,5 +268,5 @@ public class EmailService {
         return null;
     }
 
-    private String nvl(String s) { return s == null ? "-" : s; }
+    private String nvl(String s) { return s == null || s.isBlank() ? "-" : s; }
 }

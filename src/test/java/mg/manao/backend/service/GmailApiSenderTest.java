@@ -1,4 +1,4 @@
-package main.java.mg.manao.backend.service;
+package mg.manao.backend.service;
 
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -27,6 +27,7 @@ class GmailApiSenderTest {
     private volatile int sendStatusFirstOnly = 0;
     private volatile int tokenStatus = 200;
     private volatile String tokenBody = "{\"access_token\":\"AT-1\",\"expires_in\":3600}";
+    private volatile String sendErrorBody;
 
     @BeforeEach
     void demarrer() throws Exception {
@@ -41,7 +42,9 @@ class GmailApiSenderTest {
             sendBodies.add(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             sendAuth.add(ex.getRequestHeaders().getFirst("Authorization"));
             int st = (n == 1 && sendStatusFirstOnly != 0) ? sendStatusFirstOnly : sendStatus;
-            reponse(ex, st, st == 200 ? "{\"id\":\"msg123\",\"threadId\":\"t1\"}" : "{\"error\":{\"code\":" + st + "}}");
+            String body = st == 200 ? "{\"id\":\"msg123\",\"threadId\":\"t1\"}"
+                    : sendErrorBody != null ? sendErrorBody : "{\"error\":{\"code\":" + st + "}}";
+            reponse(ex, st, body);
         });
         server.start();
         base = "http://127.0.0.1:" + server.getAddress().getPort();
@@ -80,6 +83,26 @@ class GmailApiSenderTest {
     }
 
     @Test
+    void adresseExpediteurManquanteDesactiveLaConfiguration() {
+        GmailApiSender s = new GmailApiSender(true, "cid", "csecret", "rt", "",
+                base + "/token", base + "/send");
+        assertFalse(s.isConfigured());
+        assertEquals("GMAIL_SENDER_ADDRESS", s.variablesManquantes());
+        assertFalse(s.envoyer("a@b.c", "S", "T").succes());
+        assertEquals(0, tokenCalls.get());
+    }
+
+    @Test
+    void adresseExpediteurInvalideEstSignaleeCommeConfigurationManquante() {
+        GmailApiSender s = new GmailApiSender(true, "cid", "csecret", "rt", "not-an-email",
+                base + "/token", base + "/send");
+        assertFalse(s.isConfigured());
+        assertEquals("GMAIL_SENDER_ADDRESS", s.variablesManquantes());
+        assertFalse(s.envoyer("a@b.c", "S", "T").succes());
+        assertEquals(0, tokenCalls.get());
+    }
+
+    @Test
     void envoiReussiProduitUnMimeValide() throws Exception {
         GmailApiSender s = sender(true, "rt");
         GmailApiSender.Resultat r = s.envoyer("dest@example.com", "Votre code de réinitialisation", "Bonjour é\nCode : 123456");
@@ -103,6 +126,15 @@ class GmailApiSenderTest {
         assertTrue(s.envoyer("a@b.c", "S", "T").succes());
         assertEquals(1, tokenCalls.get());
         assertEquals(2, sendCalls.get());
+    }
+
+    @Test
+    void jetonExpireEstRenouveleAvantLeProchainEnvoi() {
+        tokenBody = "{\"access_token\":\"AT-1\",\"expires_in\":0}";
+        GmailApiSender s = sender(true, "rt");
+        assertTrue(s.envoyer("a@b.c", "S", "T").succes());
+        assertTrue(s.envoyer("a@b.c", "S", "T").succes());
+        assertEquals(2, tokenCalls.get());
     }
 
     @Test
@@ -132,6 +164,19 @@ class GmailApiSenderTest {
     }
 
     @Test
+    void erreur403IdentifieUnProblemeDePermissionSansExposerDeSecret() {
+        sendStatus = 403;
+        sendErrorBody = "{\"error\":{\"code\":403,\"status\":\"PERMISSION_DENIED\"}}";
+        GmailApiSender.Resultat r = sender(true, "SECRET-REFRESH-TOKEN").envoyer("a@b.c", "S", "T");
+        assertFalse(r.succes());
+        assertFalse(r.transitoire());
+        assertTrue(r.detail().contains("HTTP 403"));
+        assertTrue(r.detail().contains("PERMISSION_DENIED"));
+        assertFalse(r.detail().contains("SECRET-REFRESH-TOKEN"));
+        assertEquals(1, sendCalls.get());
+    }
+
+    @Test
     void invalidGrantDonneUnMessageClairSansSecret() {
         tokenStatus = 400;
         tokenBody = "{\"error\":\"invalid_grant\",\"error_description\":\"Token has been expired or revoked.\"}";
@@ -139,6 +184,17 @@ class GmailApiSenderTest {
         assertFalse(r.succes());
         assertTrue(r.detail().contains("invalid_grant"));
         assertFalse(r.detail().contains("SUPER-REFRESH-SECRET"));
+        assertEquals(0, sendCalls.get());
+    }
+
+    @Test
+    void scopeOauthSansGmailSendEstRefuseAvantToutEnvoi() {
+        tokenBody = "{\"access_token\":\"AT-1\",\"expires_in\":3600,\"scope\":\"openid email\"}";
+
+        GmailApiSender.Resultat r = sender(true, "rt").verifierJeton();
+
+        assertFalse(r.succes());
+        assertTrue(r.detail().contains("OAuth scope gmail.send absent"));
         assertEquals(0, sendCalls.get());
     }
 

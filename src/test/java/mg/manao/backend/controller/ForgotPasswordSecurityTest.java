@@ -1,6 +1,7 @@
 package mg.manao.backend.controller;
 
 import mg.manao.backend.config.SecurityConfig;
+import mg.manao.backend.exception.ApiException;
 import mg.manao.backend.security.CustomUserDetailsService;
 import mg.manao.backend.security.JwtAuthFilter;
 import mg.manao.backend.security.JwtService;
@@ -12,9 +13,11 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -62,5 +65,18 @@ class ForgotPasswordSecurityTest {
                 .andExpect(content().string(""));
 
         verify(authService).genererNouveauCode("person@example.com");
+    }
+
+    @Test
+    void resetRequestReturnsControlledServiceUnavailableWhenGmailIsUnavailable() throws Exception {
+        doThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Le service de réinitialisation est temporairement indisponible."))
+                .when(authService).genererNouveauCode("person@example.com");
+
+        mockMvc.perform(post("/auth/password/nouveau-code")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"person@example.com\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(content().json("{\"error\":\"Le service de réinitialisation est temporairement indisponible.\"}"));
     }
 }
