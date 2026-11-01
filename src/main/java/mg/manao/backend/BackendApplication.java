@@ -24,7 +24,7 @@ public class BackendApplication {
     @EventListener(ApplicationReadyEvent.class)
     public void onReady() {
         if (STARTED.compareAndSet(false, true)) {
-            System.out.println("BackendApplication started successfully.");
+            System.out.println("Backend springboot started successfully.");
         }
     }
 }
