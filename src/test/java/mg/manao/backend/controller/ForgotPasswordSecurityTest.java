@@ -1,7 +1,6 @@
 package mg.manao.backend.controller;
 
 import mg.manao.backend.config.SecurityConfig;
-import mg.manao.backend.exception.ApiException;
 import mg.manao.backend.security.CustomUserDetailsService;
 import mg.manao.backend.security.JwtAuthFilter;
 import mg.manao.backend.security.JwtService;
@@ -12,15 +11,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
-import org.springframework.http.MediaType;
-import org.springframework.http.HttpStatus;
 import org.springframework.test.web.servlet.MockMvc;
 
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(AuthController.class)
@@ -40,43 +34,18 @@ class ForgotPasswordSecurityTest {
     private JwtService jwtService;
 
     @Test
-    void forgotPasswordIsPublicAndAlwaysReturnsNoContent() throws Exception {
-        mockMvc.perform(post("/auth/forgot-password")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"email\":\"person@example.com\"}"))
-                .andExpect(status().isNoContent())
-                .andExpect(content().string(""));
-
-        verify(authService).forgotPassword("person@example.com");
-    }
-
-    @Test
     void protectedAuthRouteRemainsProtected() throws Exception {
         mockMvc.perform(get("/auth/me"))
                 .andExpect(status().isForbidden());
     }
 
     @Test
-    void requestResetCodeIsPublicAndReturnsNoSecret() throws Exception {
-        mockMvc.perform(post("/auth/password/nouveau-code")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"email\":\"person@example.com\"}"))
-                .andExpect(status().isNoContent())
-                .andExpect(content().string(""));
-
-        verify(authService).genererNouveauCode("person@example.com");
-    }
-
-    @Test
-    void resetRequestReturnsControlledServiceUnavailableWhenGmailIsUnavailable() throws Exception {
-        doThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
-                "Le service de réinitialisation est temporairement indisponible."))
-                .when(authService).genererNouveauCode("person@example.com");
-
-        mockMvc.perform(post("/auth/password/nouveau-code")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"email\":\"person@example.com\"}"))
-                .andExpect(status().isServiceUnavailable())
-                .andExpect(content().json("{\"error\":\"Le service de réinitialisation est temporairement indisponible.\"}"));
+    void removedForgotPasswordEndpointsAreNotPublic() throws Exception {
+        // La gestion du mot de passe oublié a été migrée vers le serveur Node.js.
+        // Ces endpoints ne sont plus exposés publiquement sur le Spring Boot.
+        mockMvc.perform(post("/auth/forgot-password"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/auth/password/nouveau-code"))
+                .andExpect(status().isForbidden());
     }
 }
