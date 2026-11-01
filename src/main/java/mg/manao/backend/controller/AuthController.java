@@ -1,12 +1,7 @@
 package mg.manao.backend.controller;
 
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Email;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
-import lombok.Getter;
 import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 import mg.manao.backend.dto.UtilisateurDTO;
 import mg.manao.backend.dto.auth.AuthResponse;
 import mg.manao.backend.dto.auth.LoginRequest;
@@ -42,61 +37,15 @@ public class AuthController {
         return ResponseEntity.status(201).body(authService.register(req));
     }
 
-    /**
-     * Compatibilité avec les clients mobiles utilisant l'ancien parcours.
-     * Ne change PLUS le mot de passe et n'en envoie plus : redirige vers le
-     * parcours unique par code temporaire (identique à /auth/password/nouveau-code).
-     * Réponse identique que l'adresse soit connue ou non.
-     */
-    @PostMapping("/forgot-password")
-    public ResponseEntity<Void> forgotPassword(@Valid @RequestBody ForgotPasswordRequest req) {
-        authService.forgotPassword(req.getEmail());
-        return ResponseEntity.noContent().build();
-    }
-
-    /**
-     * "Mot de passe oublié" — bouton "Nouveau code".
-     * Génère un nouveau code à 6 chiffres et invalide le précédent.
-     * Réservé au Président / Voyageur (jamais ADMIN).
-     */
-    @PostMapping("/password/nouveau-code")
-    public ResponseEntity<Void> nouveauCode(@Valid @RequestBody NouveauCodeRequest req) {
-        authService.genererNouveauCode(req.getEmail());
-        return ResponseEntity.noContent().build();
-    }
-    /** Validation du code + nouveau mot de passe. */
-    @PostMapping("/password/reinitialiser")
-    public ResponseEntity<Void> reinitialiserMotDePasse(@Valid @RequestBody ResetPasswordRequest req) {
-        authService.reinitialiserMotDePasse(req.getEmail(), req.getCode(), req.getPassword());
-        return ResponseEntity.noContent().build();
-    }
+    // ── Mot de passe oublié : MIGRÉ vers le serveur Node.js (server/index.js) ──
+    // Les endpoints /auth/forgot-password, /auth/password/nouveau-code et
+    // /auth/password/reinitialiser sont désormais gérés par le serveur Express
+    // (port 4001 par défaut). Le frontend appelle directement ce serveur.
 
     @GetMapping("/me")
     public ResponseEntity<UtilisateurDTO> me() {
         var current = CurrentUser.get();
         if (current == null) throw ApiException.unauthorized("Non authentifié.");
         return ResponseEntity.ok(utilisateurService.findById(current.getId()));
-    }
-
-    @Getter @Setter
-    public static class NouveauCodeRequest {
-        @NotBlank @Email
-        private String email;
-    }
-
-    @Getter @Setter
-    public static class ForgotPasswordRequest {
-        @NotBlank @Email
-        private String email;
-    }
-
-    @Getter @Setter
-    public static class ResetPasswordRequest {
-        @NotBlank @Email
-        private String email;
-        @NotBlank
-        private String code;
-        @NotBlank @Size(min = 6)
-        private String password;
     }
 }

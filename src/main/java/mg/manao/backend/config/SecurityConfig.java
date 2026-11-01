@@ -25,7 +25,8 @@ import java.util.List;
 /**
  * ── Règles d'autorisation ──────────────────────────────────────
  * Publiques (aucun token requis) :
- *   - POST /auth/login, /auth/register, /auth/password/nouveau-code, /auth/password/reinitialiser
+ *   - POST /auth/login, /auth/register
+ *   (Le mot de passe oublié a été migré vers le serveur Express JS)
  *   - GET  /voyages, /voyages/{id}, /voyages/{id}/places, /cooperatives
  *   - GET  /recus/verify/{token} (page scannée, données minimales)
  *   (le check-in POST /recus/verify/{token}/checkin exige une authentification)
@@ -54,6 +55,9 @@ import java.util.List;
  *   - DELETE /paiements, DELETE /recus, /notifications, /dashboard/stats
  *   - DELETE /reservations/{id}
  *   - GET /demandes-cooperatives (liste complète), PATCH .../approve, .../reject
+ *   - DELETE /demandes-cooperatives/**
+ *
+ * Authentifié (ADMIN, PRESIDENT ou VOYAGEUR) — filtrage fin dans les services
  */
 @Configuration
 @EnableWebSecurity
@@ -103,10 +107,7 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
 
                 // ── Public ──────────────────────────────────
-                .requestMatchers(HttpMethod.POST, "/auth/login", "/auth/register",
-                                                   "/auth/forgot-password",
-                                                   "/auth/password/nouveau-code",
-                                                   "/auth/password/reinitialiser").permitAll()
+                .requestMatchers(HttpMethod.POST, "/auth/login", "/auth/register").permitAll()
                 .requestMatchers(HttpMethod.GET, "/voyages", "/voyages/**", "/cooperatives").permitAll()
                 // Vérification publique en lecture seule (données minimales) ; le check-in
                 // (POST /recus/verify/{token}/checkin) exige une authentification et est
