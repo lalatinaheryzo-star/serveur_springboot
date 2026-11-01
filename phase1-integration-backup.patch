@@ -1,0 +1,953 @@
+diff --git a/src/main/java/mg/manao/backend/config/SecurityConfig.java b/src/main/java/mg/manao/backend/config/SecurityConfig.java
+index 07fccd3..eda2cc7 100644
+--- a/src/main/java/mg/manao/backend/config/SecurityConfig.java
++++ b/src/main/java/mg/manao/backend/config/SecurityConfig.java
+@@ -122,6 +122,10 @@ public class SecurityConfig {
+                 .requestMatchers("/utilisateurs/**").hasRole("ADMIN")
+                 .requestMatchers("/notifications/**").hasRole("ADMIN")
+                 .requestMatchers("/dashboard/**").hasRole("ADMIN")
++                // Diagnostic SMTP / envoi d'e-mails de test (EmailDiagnosticController) :
++                // sans cette r??gle, tout compte connect?? pouvait faire envoyer des e-mails
++                // ?? n'importe quelle adresse via le Gmail de la plateforme.
++                .requestMatchers("/diagnostic/**").hasRole("ADMIN")
+                 .requestMatchers(HttpMethod.DELETE, "/cooperatives/**").hasRole("ADMIN")
+                 .requestMatchers(HttpMethod.DELETE, "/reservations/**").hasRole("ADMIN")
+                 .requestMatchers(HttpMethod.DELETE, "/paiements/**").hasRole("ADMIN")
+diff --git a/src/main/java/mg/manao/backend/controller/AuthController.java b/src/main/java/mg/manao/backend/controller/AuthController.java
+index 81e386b..ff24dc6 100644
+--- a/src/main/java/mg/manao/backend/controller/AuthController.java
++++ b/src/main/java/mg/manao/backend/controller/AuthController.java
+@@ -43,8 +43,10 @@ public class AuthController {
+     }
+ 
+     /**
+-     * Compatibilit?? avec les clients mobiles utilisant l'ancien parcours :
+-     * r??ponse identique que l'adresse soit connue ou non.
++     * Compatibilit?? avec les clients mobiles utilisant l'ancien parcours.
++     * Ne change PLUS le mot de passe et n'en envoie plus : redirige vers le
++     * parcours unique par code temporaire (identique ?? /auth/password/nouveau-code).
++     * R??ponse identique que l'adresse soit connue ou non.
+      */
+     @PostMapping("/forgot-password")
+     public ResponseEntity<Void> forgotPassword(@Valid @RequestBody ForgotPasswordRequest req) {
+diff --git a/src/main/java/mg/manao/backend/controller/PaiementController.java b/src/main/java/mg/manao/backend/controller/PaiementController.java
+index a81e2d1..f5b276c 100644
+--- a/src/main/java/mg/manao/backend/controller/PaiementController.java
++++ b/src/main/java/mg/manao/backend/controller/PaiementController.java
+@@ -69,6 +69,11 @@ public class PaiementController {
+             if (!reservation.getUtilisateur().getId().equals(current.getId())) {
+                 throw ApiException.forbidden("Vous ne pouvez payer que votre propre r??servation.");
+             }
++        } else if (current.getRole() == Utilisateur.Role.PRESIDENT) {
++            // Un Pr??sident n'enregistre un paiement que pour une r??servation de SA coop??rative
++            // (l??ve 403 sinon).
++            Cooperative coop = cooperativeService.getEntityForPresident(current.getId());
++            reservationService.findByIdForPresident(UUID.fromString(req.getReservationId()), coop);
+         }
+         return ResponseEntity.status(201).body(paiementService.create(req));
+     }
+diff --git a/src/main/java/mg/manao/backend/controller/PlaceController.java b/src/main/java/mg/manao/backend/controller/PlaceController.java
+index 99e99df..14b7a4b 100644
+--- a/src/main/java/mg/manao/backend/controller/PlaceController.java
++++ b/src/main/java/mg/manao/backend/controller/PlaceController.java
+@@ -7,6 +7,7 @@ import mg.manao.backend.dto.ReserverPlaceRequest;
+ import mg.manao.backend.entity.Reservation;
+ import mg.manao.backend.exception.ApiException;
+ import mg.manao.backend.security.CurrentUser;
++import mg.manao.backend.security.SecurityUserDetails;
+ import mg.manao.backend.service.PlaceService;
+ import mg.manao.backend.service.ReservationService;
+ import org.springframework.http.ResponseEntity;
+@@ -34,23 +35,40 @@ public class PlaceController {
+      */
+     @PostMapping("/places/{id}/reserver")
+     public ResponseEntity<ReservationDTO> reserver(@PathVariable UUID id, @RequestBody(required = false) ReserverPlaceRequest req) {
+-        UUID utilisateurId = resolveUtilisateurId(req);
++        SecurityUserDetails current = requireCurrent();
++        UUID utilisateurId = resolveUtilisateurId(req, current);
+         Reservation reservation = placeService.reserverPlace(id, utilisateurId);
+         return ResponseEntity.status(201).body(ReservationService.toDto(reservation));
+     }
+ 
+     @PostMapping("/places/{id}/liberer")
+     public ResponseEntity<Void> liberer(@PathVariable UUID id) {
+-        placeService.libererPlace(id);
++        SecurityUserDetails current = requireCurrent();
++        placeService.libererPlace(id, current.getId(), current.getRole());
+         return ResponseEntity.noContent().build();
+     }
+ 
+-    private UUID resolveUtilisateurId(ReserverPlaceRequest req) {
++    private SecurityUserDetails requireCurrent() {
++        SecurityUserDetails current = CurrentUser.get();
++        if (current == null) throw ApiException.unauthorized("Non authentifi??.");
++        return current;
++    }
++
++    /**
++     * L'identit?? vient de l'authentification. `utilisateur_id` (fourni par le client) n'est
++     * accept?? que s'il est identique ?? l'utilisateur connect??, ou si l'appelant est ADMIN
++     * (r??servation faite par l'admin pour un voyageur).
++     */
++    private UUID resolveUtilisateurId(ReserverPlaceRequest req, SecurityUserDetails current) {
+         if (req != null && req.getUtilisateurId() != null && !req.getUtilisateurId().isBlank()) {
+-            return UUID.fromString(req.getUtilisateurId());
++            UUID demande = UUID.fromString(req.getUtilisateurId().trim());
++            if (!demande.equals(current.getId())) {
++                if (current.getRole() != mg.manao.backend.entity.Utilisateur.Role.ADMIN) {
++                    throw ApiException.forbidden("Vous ne pouvez r??server une place qu'en votre propre nom.");
++                }
++                return demande;
++            }
+         }
+-        var current = CurrentUser.get();
+-        if (current == null) throw ApiException.unauthorized("Non authentifi??.");
+         return current.getId();
+     }
+ }
+diff --git a/src/main/java/mg/manao/backend/controller/RecuController.java b/src/main/java/mg/manao/backend/controller/RecuController.java
+index b235611..aea02cd 100644
+--- a/src/main/java/mg/manao/backend/controller/RecuController.java
++++ b/src/main/java/mg/manao/backend/controller/RecuController.java
+@@ -41,21 +41,20 @@ public class RecuController {
+ 
+     @GetMapping("/reservation/{reservationId}")
+     public RecuDTO findByReservation(@PathVariable UUID reservationId) {
+-        // La requ??te du service charge d??j?? re??u + paiement + r??servation +
+-        // voyage + coop??rative + voyageur en une seule lecture SQL.
+-        RecuDTO dto = recuService.findByReservation(reservationId);
+-        assertOwnerOrAdmin(dto);
+-        return dto;
++        // Le contr??le d'acc??s (propri??taire / Pr??sident de la coop??rative / ADMIN) est fait dans le
++        // service AVANT toute g??n??ration de re??u.
++        SecurityUserDetails current = CurrentUser.get();
++        if (current == null) throw ApiException.unauthorized("Non authentifi??.");
++        return recuService.findByReservation(reservationId, current.getId(), current.getRole());
+     }
+ 
+     @PostMapping
+     public ResponseEntity<RecuDTO> create(@Valid @RequestBody RecuIO.CreateRecuRequest req) {
+         SecurityUserDetails current = CurrentUser.get();
+         if (current == null) throw ApiException.unauthorized("Non authentifi??.");
+-        // Le contr??le fin (le paiement appartient bien ?? l'utilisateur) est fait via
+-        // le paiement -> r??servation -> utilisateur dans RecuService le cas ??ch??ant ;
+-        // ici on s'assure au minimum que la requ??te est authentifi??e.
+-        return ResponseEntity.status(201).body(recuService.create(req));
++        // RecuService.create v??rifie que le paiement appartient ?? l'utilisateur connect??
++        // (ou ?? la coop??rative du Pr??sident, ou que l'appelant est ADMIN).
++        return ResponseEntity.status(201).body(recuService.create(req, current.getId(), current.getRole()));
+     }
+ 
+     @GetMapping("/{id}/download")
+diff --git a/src/main/java/mg/manao/backend/controller/ReservationController.java b/src/main/java/mg/manao/backend/controller/ReservationController.java
+index b9e1918..cdf3829 100644
+--- a/src/main/java/mg/manao/backend/controller/ReservationController.java
++++ b/src/main/java/mg/manao/backend/controller/ReservationController.java
+@@ -40,18 +40,38 @@ public class ReservationController {
+         SecurityUserDetails current = CurrentUser.get();
+         if (current == null) throw ApiException.unauthorized("Non authentifi??.");
+ 
++        // utilisateur_id est fourni par le client : il ne sert jamais ?? ??largir l'acc??s.
++        UUID requested = null;
+         if (utilisateurId != null && !utilisateurId.isBlank()) {
+-            UUID requested = UUID.fromString(utilisateurId);
+-            if (current.getRole() == Utilisateur.Role.VOYAGEUR && !requested.equals(current.getId())) {
+-                throw ApiException.forbidden("Vous ne pouvez consulter que vos propres r??servations.");
++            try {
++                requested = UUID.fromString(utilisateurId.trim());
++            } catch (IllegalArgumentException e) {
++                throw ApiException.badRequest("utilisateur_id invalide.");
+             }
+-            return reservationService.findForUtilisateur(requested, statut);
+         }
+ 
+         return switch (current.getRole()) {
+-            case ADMIN -> reservationService.findAllForAdmin(statut);
+-            case PRESIDENT -> reservationService.findAllForPresident(myCooperativeId(current), statut);
+-            case VOYAGEUR -> reservationService.findForUtilisateur(current.getId(), statut);
++            // ADMIN : toutes les r??servations, ??ventuellement filtr??es sur un utilisateur.
++            case ADMIN -> requested != null
++                    ? reservationService.findForUtilisateur(requested, statut)
++                    : reservationService.findAllForAdmin(statut);
++            // PRESIDENT : uniquement SA coop??rative ; utilisateur_id ne fait que filtrer ?? l'int??rieur.
++            case PRESIDENT -> {
++                List<ReservationDTO> deSaCooperative =
++                        reservationService.findAllForPresident(myCooperativeId(current), statut);
++                if (requested == null) yield deSaCooperative;
++                String filtre = requested.toString();
++                yield deSaCooperative.stream()
++                        .filter(r -> filtre.equals(r.getUtilisateurId()))
++                        .toList();
++            }
++            // VOYAGEUR : uniquement les siennes ; l'id d'un autre utilisateur est refus??.
++            case VOYAGEUR -> {
++                if (requested != null && !requested.equals(current.getId())) {
++                    throw ApiException.forbidden("Vous ne pouvez consulter que vos propres r??servations.");
++                }
++                yield reservationService.findForUtilisateur(current.getId(), statut);
++            }
+         };
+     }
+ 
+diff --git a/src/main/java/mg/manao/backend/entity/Utilisateur.java b/src/main/java/mg/manao/backend/entity/Utilisateur.java
+index c68ff1e..7ed4685 100644
+--- a/src/main/java/mg/manao/backend/entity/Utilisateur.java
++++ b/src/main/java/mg/manao/backend/entity/Utilisateur.java
+@@ -71,6 +71,29 @@ public class Utilisateur {
+     @Column(name = "code_verification_expiration")
+     private OffsetDateTime codeReinitialisationExpiration;
+ 
++    // ?????? Limitation des tentatives (voir AuthService) ???????????????????????????????????????????????????????????????
++    // Compteurs persist??s en base (et non en m??moire) pour rester corrects
++    // avec plusieurs instances du backend. N??cessitent la migration
++    // database_migration_auth_rate_limit.sql (ddl-auto=validate).
++
++    /** Tentatives incorrectes sur le code de r??initialisation en cours. */
++    @Column(name = "reset_tentatives", nullable = false)
++    @Builder.Default
++    private int resetTentatives = 0;
++
++    /** Derni??re demande de code de r??initialisation trait??e (d??lai minimal entre deux demandes). */
++    @Column(name = "reset_derniere_demande")
++    private OffsetDateTime resetDerniereDemande;
++
++    /** ??checs de connexion cons??cutifs. */
++    @Column(name = "login_echecs", nullable = false)
++    @Builder.Default
++    private int loginEchecs = 0;
++
++    /** Connexion refus??e tant que cette date n'est pas d??pass??e. */
++    @Column(name = "login_verrou_jusqua")
++    private OffsetDateTime loginVerrouJusqua;
++
+     @PrePersist
+     public void prePersist() {
+         if (dateCreation == null) dateCreation = OffsetDateTime.now();
+diff --git a/src/main/java/mg/manao/backend/repository/UtilisateurRepository.java b/src/main/java/mg/manao/backend/repository/UtilisateurRepository.java
+index 1cf3258..86dfc72 100644
+--- a/src/main/java/mg/manao/backend/repository/UtilisateurRepository.java
++++ b/src/main/java/mg/manao/backend/repository/UtilisateurRepository.java
+@@ -1,7 +1,11 @@
+ package mg.manao.backend.repository;
+ 
++import jakarta.persistence.LockModeType;
+ import mg.manao.backend.entity.Utilisateur;
+ import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.data.jpa.repository.Lock;
++import org.springframework.data.jpa.repository.Query;
++import org.springframework.data.repository.query.Param;
+ 
+ import java.util.Optional;
+ import java.util.UUID;
+@@ -9,4 +13,14 @@ import java.util.UUID;
+ public interface UtilisateurRepository extends JpaRepository<Utilisateur, UUID> {
+     Optional<Utilisateur> findByEmailIgnoreCase(String email);
+     boolean existsByEmailIgnoreCase(String email);
++
++    /**
++     * M??me recherche que findByEmailIgnoreCase, avec verrou pessimiste sur la ligne :
++     * les tentatives de connexion / de code simultan??es pour un m??me compte sont
++     * s??rialis??es, donc les compteurs d'??checs ne peuvent pas ??tre contourn??s par
++     * des requ??tes parall??les. ?? appeler uniquement dans une transaction.
++     */
++    @Lock(LockModeType.PESSIMISTIC_WRITE)
++    @Query("SELECT u FROM Utilisateur u WHERE LOWER(u.email) = LOWER(:email)")
++    Optional<Utilisateur> findByEmailForUpdate(@Param("email") String email);
+ }
+diff --git a/src/main/java/mg/manao/backend/service/AuthService.java b/src/main/java/mg/manao/backend/service/AuthService.java
+index ff2975b..54eb376 100644
+--- a/src/main/java/mg/manao/backend/service/AuthService.java
++++ b/src/main/java/mg/manao/backend/service/AuthService.java
+@@ -13,6 +13,7 @@ import mg.manao.backend.security.JwtService;
+ import org.springframework.security.crypto.password.PasswordEncoder;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
++import org.springframework.transaction.support.TransactionTemplate;
+ 
+ import java.security.SecureRandom;
+ import java.time.OffsetDateTime;
+@@ -24,8 +25,18 @@ import static mg.manao.backend.service.UtilisateurService.toDto;
+ public class AuthService {
+ 
+     /** Dur??e de validit?? d'un code de r??initialisation (inchang??e : 30 min). */
+-    private static final int CODE_VALIDITE_MINUTES = 30;
+-    private static final String MOT_DE_PASSE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
++    static final int CODE_VALIDITE_MINUTES = 30;
++    /** Tentatives incorrectes tol??r??es sur un m??me code ; au-del??, le code est invalid??. */
++    static final int MAX_TENTATIVES_CODE = 5;
++    /** D??lai minimal entre deux demandes de code pour un m??me compte. */
++    static final int DELAI_MIN_ENTRE_DEMANDES_SECONDES = 60;
++    /** ??checs de connexion cons??cutifs avant verrouillage temporaire du compte. */
++    static final int MAX_ECHECS_CONNEXION = 5;
++    static final int VERROU_CONNEXION_MINUTES = 15;
++
++    static final String MESSAGE_CONNEXION_ECHEC = "Email ou mot de passe incorrect.";
++    static final String MESSAGE_CODE_INVALIDE = "Code invalide ou expir??.";
++
+     private static final SecureRandom RANDOM = new SecureRandom();
+     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
+ 
+@@ -34,14 +45,72 @@ public class AuthService {
+     private final JwtService jwtService;
+     private final EmailExistenceValidator emailExistenceValidator;
+     private final EmailService emailService;
++    private final TransactionTemplate transactionTemplate;
++
++    /** Hash factice, calcul?? une seule fois, pour ??galiser le temps de r??ponse quand le compte n'existe pas. */
++    private volatile String hashFactice;
+ 
+-    /** Code ?? 6 chiffres renvoy?? ?? l'appelant apr??s un clic sur "Nouveau code". */
++    private String hashFactice() {
++        String h = hashFactice;
++        if (h == null) {
++            h = passwordEncoder.encode("mot-de-passe-factice-jamais-utilise");
++            hashFactice = h;
++        }
++        return h;
++    }
++
++    /** Effectue un calcul BCrypt ?? pour rien ?? afin que ?? compte inconnu ?? ne r??ponde pas nettement plus vite. */
++    private void travailFactice(String secret) {
++        passwordEncoder.matches(secret == null ? "" : secret, hashFactice());
++    }
++
++    /**
++     * Connexion avec limitation des ??checs (AUTH-03).
++     * Le compte est verrouill?? en lecture/??criture pendant la v??rification : des requ??tes
++     * parall??les sur le m??me compte sont donc compt??es l'une apr??s l'autre.
++     * Les r??ponses d'??chec sont identiques (401, m??me message) pour : compte inconnu,
++     * mauvais mot de passe et compte temporairement verrouill?? (AUTH-07).
++     * noRollbackFor : le compteur d'??checs doit ??tre conserv?? m??me quand on l??ve l'exception.
++     */
++    @Transactional(noRollbackFor = ApiException.class)
+     public AuthResponse login(LoginRequest req) {
+-        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(req.getEmail().trim())
+-                .orElseThrow(() -> ApiException.unauthorized("Email ou mot de passe incorrect."));
++        String email = req.getEmail() == null ? "" : req.getEmail().trim();
++        Utilisateur user = utilisateurRepository.findByEmailForUpdate(email).orElse(null);
++
++        if (user == null) {
++            travailFactice(req.getPassword());
++            throw ApiException.unauthorized(MESSAGE_CONNEXION_ECHEC);
++        }
++
++        OffsetDateTime maintenant = OffsetDateTime.now();
++        boolean verrouille = user.getLoginVerrouJusqua() != null
++                && user.getLoginVerrouJusqua().isAfter(maintenant);
++        boolean motDePasseOk = passwordEncoder.matches(
++                req.getPassword() == null ? "" : req.getPassword(), user.getMotDePasse());
+ 
+-        if (!passwordEncoder.matches(req.getPassword(), user.getMotDePasse())) {
+-            throw ApiException.unauthorized("Email ou mot de passe incorrect.");
++        if (verrouille) {
++            // M??me un bon mot de passe est refus?? pendant le verrouillage.
++            throw ApiException.unauthorized(MESSAGE_CONNEXION_ECHEC);
++        }
++
++        if (!motDePasseOk) {
++            int echecs = user.getLoginEchecs() + 1;
++            if (echecs >= MAX_ECHECS_CONNEXION) {
++                user.setLoginVerrouJusqua(maintenant.plusMinutes(VERROU_CONNEXION_MINUTES));
++                user.setLoginEchecs(0);
++                log.warn("Compte {} verrouill?? {} min apr??s {} ??checs de connexion.",
++                        user.getId(), VERROU_CONNEXION_MINUTES, MAX_ECHECS_CONNEXION);
++            } else {
++                user.setLoginEchecs(echecs);
++            }
++            utilisateurRepository.save(user);
++            throw ApiException.unauthorized(MESSAGE_CONNEXION_ECHEC);
++        }
++
++        if (user.getLoginEchecs() != 0 || user.getLoginVerrouJusqua() != null) {
++            user.setLoginEchecs(0);
++            user.setLoginVerrouJusqua(null);
++            utilisateurRepository.save(user);
+         }
+ 
+         // Plus aucun blocage li?? ?? la v??rification de l'adresse e-mail :
+@@ -54,9 +123,8 @@ public class AuthService {
+     /**
+      * Inscription directe : le compte est cr???? et imm??diatement actif.
+      * Aucun code de v??rification n'est g??n??r?? ni envoy?? par e-mail.
+-     * Failed delivery leaves no active reset code.
+-     * IntegrerCooperative (demande Pr??sident) d'encha??ner sans repasser
+-     * par un ??cran interm??diaire.
++     * Le r??le est toujours VOYAGEUR : une demande de coop??rative ne donne
++     * aucun droit de Pr??sident avant validation par l'Admin.
+      */
+     @Transactional
+     public AuthResponse register(RegisterRequest req) {
+@@ -88,102 +156,146 @@ public class AuthService {
+     }
+ 
+     /**
+-     * Compatibilit?? avec le client mobile : g??n??re un mot de passe temporaire
+-     * et l'envoie par e-mail, sans r??v??ler si le compte existe.
++     * Ancien point d'entr??e ?? mot de passe oubli?? ?? (clients mobiles) : il ne change PLUS
++     * le mot de passe et n'envoie JAMAIS de mot de passe. Il redirige vers le parcours
++     * unique par code temporaire (genererNouveauCode).
+      */
+-    @Transactional
+     public void forgotPassword(String email) {
+-        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim()).orElse(null);
+-        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
+-            return;
+-        }
+-
+-        String nouveauMotDePasse = genererMotDePasse();
+-        if (!emailService.envoyerNouveauMotDePasse(user.getEmail(), user.getPrenom(), nouveauMotDePasse)) {
+-            log.error("Le nouveau mot de passe n'a pas pu ??tre envoy?? par e-mail ?? {}.", user.getEmail());
+-            return;
+-        }
+-
+-        user.setMotDePasse(passwordEncoder.encode(nouveauMotDePasse));
+-        user.setCodeReinitialisation(null);
+-        user.setCodeReinitialisationExpiration(null);
+-        utilisateurRepository.save(user);
+-    }
+-
+-    private String genererMotDePasse() {
+-        StringBuilder password = new StringBuilder(10);
+-        for (int i = 0; i < 10; i++) {
+-            password.append(MOT_DE_PASSE_ALPHABET.charAt(RANDOM.nextInt(MOT_DE_PASSE_ALPHABET.length())));
+-        }
+-        return password.toString();
++        genererNouveauCode(email);
+     }
+ 
+     /**
+-     * Sends a six-digit reset code without disclosing account details.
+-     * The response does not disclose account existence, role, or delivery result.
+-     * Failed delivery leaves no active reset code.
++     * Demande de code de r??initialisation (bouton ?? Nouveau code ??).
++     *
++     * Trois ??tapes, pour ne JAMAIS garder de connexion base ni de verrou pendant l'envoi SMTP
++     * (sinon quelques demandes parall??les sur un m??me compte ??puiseraient le pool de 5 connexions) :
++     *  1. transaction courte avec verrou : contr??le du d??lai minimal et r??servation de la demande ;
++     *  2. envoi de l'e-mail, hors transaction ;
++     *  3. transaction courte avec verrou : enregistrement du hash du nouveau code, seulement si l'envoi a r??ussi.
++     *
++     * - Deux demandes simultan??es : la seconde attend le verrou de l'??tape 1, voit le d??lai d??j??
++     *   consomm?? et est ignor??e -> un seul e-mail.
++     * - ??chec d'envoi : le code pr??c??dent, encore valable, est conserv?? (AUTH-06).
++     * - Le d??lai est consomm?? m??me si l'envoi ??choue, pour ne pas marteler le SMTP.
++     * - R??ponse externe identique dans tous les cas (AUTH-07).
++     * Limite connue : le temps de r??ponse d'un compte existant (envoi SMTP synchrone) reste
++     * nettement plus long que celui d'un compte inconnu.
+      */
+-    @Transactional
+     public void genererNouveauCode(String email) {
+-        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim()).orElse(null);
+-        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
+-            return;
+-        }
++        String adresse = email == null ? "" : email.trim();
+ 
+-        // Invalidate the previous code even if the new delivery fails.
+-        user.setCodeReinitialisation(null);
+-        user.setCodeReinitialisationExpiration(null);
+-        utilisateurRepository.save(user);
++        DemandeCode demande = transactionTemplate.execute(status -> reserverDemandeDeCode(adresse));
++        if (demande == null) return;
+ 
+         String code = String.format("%06d", RANDOM.nextInt(1_000_000));
++        boolean envoye;
+         try {
+-            if (!emailService.envoyerCodeReinitialisation(user.getEmail(), user.getPrenom(), code)) {
+-                log.warn("Reset code delivery failed.");
+-                return;
+-            }
++            envoye = emailService.envoyerCodeReinitialisation(demande.email(), demande.prenom(), code);
+         } catch (RuntimeException e) {
+-            log.warn("?????chec de l'envoi du code de r????initialisation : {}", e.getMessage());
++            envoye = false;
++        }
++        if (!envoye) {
++            log.warn("Code de r??initialisation non envoy?? (compte {}) : l'??ventuel code pr??c??dent est conserv??.",
++                    demande.id());
+             return;
+         }
+ 
+-        user.setCodeReinitialisation(passwordEncoder.encode(code));
+-        user.setCodeReinitialisationExpiration(OffsetDateTime.now().plusMinutes(CODE_VALIDITE_MINUTES));
++        String hash = passwordEncoder.encode(code);
++        transactionTemplate.executeWithoutResult(status ->
++                utilisateurRepository.findByEmailForUpdate(demande.email()).ifPresent(u -> {
++                    u.setCodeReinitialisation(hash);
++                    u.setCodeReinitialisationExpiration(OffsetDateTime.now().plusMinutes(CODE_VALIDITE_MINUTES));
++                    u.setResetTentatives(0);
++                    utilisateurRepository.save(u);
++                }));
++    }
++
++    private record DemandeCode(java.util.UUID id, String email, String prenom) {}
++
++    /** ??tape 1 : renvoie null (aucun envoi) pour compte inconnu, ADMIN ou demande trop rapproch??e. */
++    private DemandeCode reserverDemandeDeCode(String adresse) {
++        Utilisateur user = utilisateurRepository.findByEmailForUpdate(adresse).orElse(null);
++        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
++            // M??me type de calcul BCrypt que pour un compte r??el (le hash du code).
++            passwordEncoder.encode(String.format("%06d", RANDOM.nextInt(1_000_000)));
++            return null;
++        }
++        OffsetDateTime maintenant = OffsetDateTime.now();
++        OffsetDateTime derniere = user.getResetDerniereDemande();
++        if (derniere != null && derniere.plusSeconds(DELAI_MIN_ENTRE_DEMANDES_SECONDES).isAfter(maintenant)) {
++            return null;
++        }
++        user.setResetDerniereDemande(maintenant);
+         utilisateurRepository.save(user);
++        return new DemandeCode(user.getId(), user.getEmail(), user.getPrenom());
+     }
++
+     /**
+-     * R??initialisation effective : le code fourni doit ??tre le DERNIER code
+-     * g??n??r??, non expir?? et non encore utilis??. En cas de succ??s, le code
+-     * est effac?? ??? il ne peut donc pas servir une seconde fois.
++     * R??initialisation effective : le code fourni doit ??tre le DERNIER code g??n??r??,
++     * non expir??, non encore utilis??, et le plafond d'essais ne doit pas ??tre atteint.
++     *
++     * Toutes les causes d'??chec (compte inconnu, ADMIN, aucun code, expir??, plafond atteint,
++     * mauvais code) renvoient la m??me r??ponse : 400 ?? Code invalide ou expir??. ?? (AUTH-07).
++     * Chaque mauvais code incr??mente un compteur persist?? ; au {@value #MAX_TENTATIVES_CODE}e ??chec,
++     * le code est invalid?? et une nouvelle demande est n??cessaire (AUTH-03/AUTH-06).
++     * En cas de succ??s le code est effac?? : usage unique.
++     * noRollbackFor : les compteurs d'??checs doivent survivre ?? l'exception lev??e.
+      */
+-    @Transactional
++    @Transactional(noRollbackFor = ApiException.class)
+     public void reinitialiserMotDePasse(String email, String code, String nouveauMotDePasse) {
+-        Utilisateur user = utilisateurRepository.findByEmailIgnoreCase(email.trim())
+-                .orElseThrow(() -> ApiException.badRequest("Code invalide ou expir??."));
++        // Contr??le ind??pendant du compte : ne consomme aucun essai.
++        if (nouveauMotDePasse == null || nouveauMotDePasse.length() < 6) {
++            throw ApiException.badRequest("Le mot de passe doit contenir au moins 6 caract??res.");
++        }
++
++        String adresse = email == null ? "" : email.trim();
++        String codeSaisi = code == null ? "" : code.trim();
+ 
+-        if (user.getRole() == Utilisateur.Role.ADMIN) {
+-            throw ApiException.badRequest("Code invalide ou expir??.");
++        Utilisateur user = utilisateurRepository.findByEmailForUpdate(adresse).orElse(null);
++        if (user == null || user.getRole() == Utilisateur.Role.ADMIN) {
++            travailFactice(codeSaisi);
++            throw ApiException.badRequest(MESSAGE_CODE_INVALIDE);
+         }
+ 
++        OffsetDateTime maintenant = OffsetDateTime.now();
+         String hash = user.getCodeReinitialisation();
+-        if (hash == null) {
+-            throw ApiException.badRequest("Aucun code en cours. Cliquez sur \"Nouveau code\".");
+-        }
+-        if (user.getCodeReinitialisationExpiration() == null
+-                || user.getCodeReinitialisationExpiration().isBefore(OffsetDateTime.now())) {
+-            throw ApiException.badRequest("Ce code a expir??. Cliquez sur \"Nouveau code\".");
++        OffsetDateTime expiration = user.getCodeReinitialisationExpiration();
++
++        if (hash == null || expiration == null) {
++            travailFactice(codeSaisi);
++            throw ApiException.badRequest(MESSAGE_CODE_INVALIDE);
+         }
+-        if (!passwordEncoder.matches(code == null ? "" : code.trim(), hash)) {
+-            // Un ancien code ne correspond plus au hash stock?? : il est donc
+-            // refus?? ici, sans traitement particulier.
+-            throw ApiException.badRequest("Code incorrect.");
++        if (expiration.isBefore(maintenant) || user.getResetTentatives() >= MAX_TENTATIVES_CODE) {
++            invaliderCode(user);
++            utilisateurRepository.save(user);
++            travailFactice(codeSaisi);
++            throw ApiException.badRequest(MESSAGE_CODE_INVALIDE);
+         }
+-        if (nouveauMotDePasse == null || nouveauMotDePasse.length() < 6) {
+-            throw ApiException.badRequest("Le mot de passe doit contenir au moins 6 caract??res.");
++
++        if (!passwordEncoder.matches(codeSaisi, hash)) {
++            int essais = user.getResetTentatives() + 1;
++            if (essais >= MAX_TENTATIVES_CODE) {
++                invaliderCode(user);
++                log.warn("Code de r??initialisation invalid?? apr??s {} essais incorrects (compte {}).",
++                        MAX_TENTATIVES_CODE, user.getId());
++            } else {
++                user.setResetTentatives(essais);
++            }
++            utilisateurRepository.save(user);
++            throw ApiException.badRequest(MESSAGE_CODE_INVALIDE);
+         }
+ 
+         user.setMotDePasse(passwordEncoder.encode(nouveauMotDePasse));
+-        user.setCodeReinitialisation(null);          // usage unique
+-        user.setCodeReinitialisationExpiration(null);
++        invaliderCode(user); // usage unique
++        // Prouver l'acc??s ?? la bo??te e-mail l??ve aussi un ??ventuel verrouillage de connexion.
++        user.setLoginEchecs(0);
++        user.setLoginVerrouJusqua(null);
+         utilisateurRepository.save(user);
+     }
++
++    private void invaliderCode(Utilisateur user) {
++        user.setCodeReinitialisation(null);
++        user.setCodeReinitialisationExpiration(null);
++        user.setResetTentatives(0);
++    }
+ }
+diff --git a/src/main/java/mg/manao/backend/service/EmailService.java b/src/main/java/mg/manao/backend/service/EmailService.java
+index 429c9b2..0808889 100644
+--- a/src/main/java/mg/manao/backend/service/EmailService.java
++++ b/src/main/java/mg/manao/backend/service/EmailService.java
+@@ -301,40 +301,4 @@ public class EmailService {
+             mailSender.send(message);
+         });
+     }
+-    /**
+-     * "Mot de passe oubli??" (Pr??sident / Voyageur uniquement ??? jamais ADMIN,
+-     * voir AuthService.forgotPassword()). Envoy?? de fa??on SYNCHRONE, comme
+-     * envoyerCodeVerification() : l'utilisateur doit savoir tout de suite si
+-     * l'envoi a ??chou?? plut??t que d'attendre en vain un e-mail.
+-     *
+-     * @return true si l'e-mail a ??t?? transmis avec succ??s au serveur SMTP.
+-     */
+-    public boolean envoyerNouveauMotDePasse(String destinataire, String prenom, String nouveauMotDePasse) {
+-        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
+-            log.warn("Email non configur?? (app.email.enabled=false ou GMAIL_USERNAME/GMAIL_APP_PASSWORD manquants) "
+-                    + "-> nouveau mot de passe non envoy?? ?? {}.", destinataire);
+-            return false;
+-        }
+-        String texte = String.format(
+-                "Bonjour %s,%n%n"
+-                + "Voici votre nouveau mot de passe pour vous connecter ?? R??servation en ligne :%n%n"
+-                + "    %s%n%n"
+-                + "Par s??curit??, pensez ?? le changer d??s votre prochaine connexion. "
+-                + "Si vous n'??tes pas ?? l'origine de cette demande, contactez votre coop??rative ou l'administrateur.",
+-                nvl(prenom), nouveauMotDePasse
+-        );
+-        try {
+-            SimpleMailMessage message = new SimpleMailMessage();
+-            message.setFrom(from == null || from.isBlank() ? username : from);
+-            message.setTo(destinataire);
+-            message.setSubject("Votre nouveau mot de passe");
+-            message.setText(texte);
+-            mailSender.send(message);
+-            log.info("Nouveau mot de passe envoy?? ?? {}.", destinataire);
+-            return true;
+-        } catch (Exception e) {
+-            log.error("??chec de l'envoi du nouveau mot de passe ?? {} : {}", destinataire, e.getMessage());
+-            return false;
+-        }
+-    }
+ }
+\ No newline at end of file
+diff --git a/src/main/java/mg/manao/backend/service/PlaceService.java b/src/main/java/mg/manao/backend/service/PlaceService.java
+index 9f06612..cb0dff2 100644
+--- a/src/main/java/mg/manao/backend/service/PlaceService.java
++++ b/src/main/java/mg/manao/backend/service/PlaceService.java
+@@ -84,16 +84,45 @@ public class PlaceService {
+         return reservation;
+     }
+ 
+-    /** Lib??re une place (annulation avant paiement, ou c??t?? admin). */
++    private void verifierDroitDeLiberer(Place place, Reservation reservation, UUID utilisateurId, Utilisateur.Role role) {
++        if (role == Utilisateur.Role.ADMIN) return;
++        if (role == Utilisateur.Role.VOYAGEUR) {
++            if (reservation != null && reservation.getUtilisateur() != null
++                    && reservation.getUtilisateur().getId().equals(utilisateurId)) {
++                // Un voyageur n'annule que SA r??servation encore ?? En attente ?? (annulation avant
++                // validation). Une r??servation valid??e par le Pr??sident ne se lib??re plus seul.
++                if (Reservation.STATUT_EN_ATTENTE.equals(reservation.getStatut())) return;
++                throw ApiException.forbidden("Cette r??servation est d??j?? trait??e : contactez la coop??rative pour l'annuler.");
++            }
++        } else if (role == Utilisateur.Role.PRESIDENT) {
++            Voyage voyage = place.getVoyage();
++            if (voyage != null && voyage.getCooperative() != null
++                    && voyage.getCooperative().getPresident() != null
++                    && voyage.getCooperative().getPresident().getId().equals(utilisateurId)) {
++                return;
++            }
++        }
++        throw ApiException.forbidden("Vous n'??tes pas autoris?? ?? lib??rer cette place.");
++    }
++
++    /**
++     * Lib??re une place (annulation avant paiement, ou c??t?? admin).
++     * Autoris?? : ADMIN ; le VOYAGEUR propri??taire de la r??servation li??e ?? cette place ;
++     * le PRESIDENT de la coop??rative qui exploite le voyage. Tout autre cas -> 403,
++     * sans aucune modification.
++     */
+     @Transactional
+-    public void libererPlace(UUID placeId) {
++    public void libererPlace(UUID placeId, UUID utilisateurId, Utilisateur.Role role) {
+         Place place = placeRepository.findByIdForUpdate(placeId)
+                 .orElseThrow(() -> ApiException.notFound("Place introuvable."));
+ 
++        java.util.Optional<Reservation> reservation = reservationRepository.findByPlaceId(placeId);
++        verifierDroitDeLiberer(place, reservation.orElse(null), utilisateurId, role);
++
+         place.setStatut("disponible");
+         placeRepository.save(place);
+ 
+-        reservationRepository.findByPlaceId(placeId).ifPresent(r -> {
++        reservation.ifPresent(r -> {
+             r.setStatut(Reservation.STATUT_ANNULEE);
+             reservationRepository.save(r);
+         });
+diff --git a/src/main/java/mg/manao/backend/service/RecuService.java b/src/main/java/mg/manao/backend/service/RecuService.java
+index 35707ef..d7eafee 100644
+--- a/src/main/java/mg/manao/backend/service/RecuService.java
++++ b/src/main/java/mg/manao/backend/service/RecuService.java
+@@ -90,16 +90,38 @@ public class RecuService {
+         return toDto(getEntity(id));
+     }
+ 
++    /**
++     * Re??u d'une r??servation. L'acc??s est contr??l?? AVANT toute g??n??ration : un utilisateur qui
++     * n'est ni propri??taire, ni Pr??sident de la coop??rative, ni ADMIN ne peut pas provoquer la
++     * cr??ation d'un re??u pour la r??servation d'un autre.
++     */
+     @Transactional
+-    public RecuDTO findByReservation(UUID reservationId) {
+-        Recu recu = recuRepository.findByReservationIdWithDetails(reservationId)
+-                .orElseGet(() -> {
+-                    Paiement paiement = paiementRepository.findByReservationIdWithDetails(reservationId)
+-                            .filter(p -> Paiement.STATUT_REUSSI.equals(p.getStatut()))
+-                            .orElseThrow(() -> ApiException.notFound("Aucun re??u pour cette r??servation."));
+-                    return ensureRecuForPaiement(paiement);
+-                });
+-        return toDto(recu);
++    public RecuDTO findByReservation(UUID reservationId, UUID utilisateurId, Utilisateur.Role role) {
++        java.util.Optional<Recu> existant = recuRepository.findByReservationIdWithDetails(reservationId);
++        if (existant.isPresent()) {
++            verifierAcces(existant.get().getPaiement().getReservation(), utilisateurId, role);
++            return toDto(existant.get());
++        }
++        Paiement paiement = paiementRepository.findByReservationIdWithDetails(reservationId)
++                .orElseThrow(() -> ApiException.notFound("Aucun re??u pour cette r??servation."));
++        verifierAcces(paiement.getReservation(), utilisateurId, role);
++        if (!Paiement.STATUT_REUSSI.equals(paiement.getStatut())) {
++            throw ApiException.notFound("Aucun re??u pour cette r??servation.");
++        }
++        return toDto(ensureRecuForPaiement(paiement));
++    }
++
++    /** ADMIN ; VOYAGEUR propri??taire de la r??servation ; PRESIDENT de la coop??rative du voyage. */
++    private void verifierAcces(Reservation r, UUID utilisateurId, Utilisateur.Role role) {
++        if (role == Utilisateur.Role.ADMIN) return;
++        if (role == Utilisateur.Role.VOYAGEUR) {
++            if (r != null && r.getUtilisateur() != null && r.getUtilisateur().getId().equals(utilisateurId)) return;
++        } else if (role == Utilisateur.Role.PRESIDENT) {
++            Voyage v = r != null ? r.getVoyage() : null;
++            if (v != null && v.getCooperative() != null && v.getCooperative().getPresident() != null
++                    && v.getCooperative().getPresident().getId().equals(utilisateurId)) return;
++        }
++        throw ApiException.forbidden("Acc??s refus?? ?? ce re??u.");
+     }
+ 
+     /**
+@@ -119,12 +141,15 @@ public class RecuService {
+     }
+ 
+     @Transactional
+-    public RecuDTO create(RecuIO.CreateRecuRequest req) {
++    public RecuDTO create(RecuIO.CreateRecuRequest req, UUID utilisateurId, Utilisateur.Role role) {
+         if (req.getPaiementId() == null || req.getPaiementId().isBlank()) {
+             throw ApiException.badRequest("paiement_id requis.");
+         }
+         Paiement paiement = paiementRepository.findById(UUID.fromString(req.getPaiementId()))
+                 .orElseThrow(() -> ApiException.notFound("Paiement introuvable."));
++        // Le re??u ne peut ??tre cr???? que par le propri??taire de la r??servation, le Pr??sident de
++        // la coop??rative concern??e ou un ADMIN.
++        verifierAcces(paiement.getReservation(), utilisateurId, role);
+ 
+         if (!Paiement.STATUT_REUSSI.equals(paiement.getStatut())) {
+             throw ApiException.badRequest("Un re??u ne peut ??tre g??n??r?? que pour un paiement r??ussi.");
+diff --git a/src/test/java/mg/manao/backend/service/AuthServiceForgotPasswordTest.java b/src/test/java/mg/manao/backend/service/AuthServiceForgotPasswordTest.java
+deleted file mode 100644
+index c901bbe..0000000
+--- a/src/test/java/mg/manao/backend/service/AuthServiceForgotPasswordTest.java
++++ /dev/null
+@@ -1,186 +0,0 @@
+-package mg.manao.backend.service;
+-
+-import mg.manao.backend.entity.Utilisateur;
+-import mg.manao.backend.repository.UtilisateurRepository;
+-import mg.manao.backend.security.JwtService;
+-import org.junit.jupiter.api.BeforeEach;
+-import org.junit.jupiter.api.Test;
+-import org.junit.jupiter.api.extension.ExtendWith;
+-import org.mockito.ArgumentCaptor;
+-import org.mockito.Mock;
+-import org.mockito.junit.jupiter.MockitoExtension;
+-import org.springframework.security.crypto.password.PasswordEncoder;
+-
+-import java.util.Optional;
+-
+-import static org.junit.jupiter.api.Assertions.assertEquals;
+-import static org.junit.jupiter.api.Assertions.assertNull;
+-import static org.mockito.ArgumentMatchers.anyString;
+-import static org.mockito.ArgumentMatchers.eq;
+-import static org.mockito.Mockito.never;
+-import static org.mockito.Mockito.verify;
+-import static org.mockito.Mockito.when;
+-
+-@ExtendWith(MockitoExtension.class)
+-class AuthServiceForgotPasswordTest {
+-
+-    @Mock
+-    private UtilisateurRepository utilisateurRepository;
+-    @Mock
+-    private PasswordEncoder passwordEncoder;
+-    @Mock
+-    private JwtService jwtService;
+-    @Mock
+-    private EmailExistenceValidator emailExistenceValidator;
+-    @Mock
+-    private EmailService emailService;
+-
+-    private AuthService authService;
+-
+-    @BeforeEach
+-    void setUp() {
+-        authService = new AuthService(
+-                utilisateurRepository,
+-                passwordEncoder,
+-                jwtService,
+-                emailExistenceValidator,
+-                emailService);
+-    }
+-
+-    @Test
+-    void forgotPasswordDoesNothingForUnknownAddress() {
+-        when(utilisateurRepository.findByEmailIgnoreCase("unknown@example.com")).thenReturn(Optional.empty());
+-
+-        authService.forgotPassword(" unknown@example.com ");
+-
+-        verify(emailService, never()).envoyerNouveauMotDePasse(anyString(), anyString(), anyString());
+-    }
+-
+-    @Test
+-    void forgotPasswordChangesPasswordAndEmailsItWithoutReturningIt() {
+-        Utilisateur user = Utilisateur.builder()
+-                .nom("Voyageur")
+-                .prenom("Ada")
+-                .email("ada@example.com")
+-                .motDePasse("old-hash")
+-                .role(Utilisateur.Role.VOYAGEUR)
+-                .codeReinitialisation("old-reset-code-hash")
+-                .build();
+-        when(utilisateurRepository.findByEmailIgnoreCase("ada@example.com")).thenReturn(Optional.of(user));
+-        when(passwordEncoder.encode(anyString())).thenAnswer(call -> "hash:" + call.getArgument(0));
+-        when(emailService.envoyerNouveauMotDePasse(anyString(), anyString(), anyString())).thenReturn(true);
+-
+-        authService.forgotPassword("ada@example.com");
+-
+-        ArgumentCaptor<String> password = ArgumentCaptor.forClass(String.class);
+-        verify(emailService).envoyerNouveauMotDePasse(
+-                eq("ada@example.com"), eq("Ada"), password.capture());
+-        assertEquals(10, password.getValue().length());
+-        assertEquals("hash:" + password.getValue(), user.getMotDePasse());
+-        assertNull(user.getCodeReinitialisation());
+-        assertNull(user.getCodeReinitialisationExpiration());
+-        verify(utilisateurRepository).save(user);
+-    }
+-
+-    @Test
+-    void forgotPasswordDoesNotChangeCredentialsWhenEmailCannotBeSent() {
+-        Utilisateur user = Utilisateur.builder()
+-                .nom("Voyageur")
+-                .prenom("Ada")
+-                .email("ada@example.com")
+-                .motDePasse("old-hash")
+-                .role(Utilisateur.Role.VOYAGEUR)
+-                .codeReinitialisation("pending-code-hash")
+-                .build();
+-        when(utilisateurRepository.findByEmailIgnoreCase("ada@example.com")).thenReturn(Optional.of(user));
+-        when(emailService.envoyerNouveauMotDePasse(anyString(), anyString(), anyString())).thenReturn(false);
+-
+-        authService.forgotPassword("ada@example.com");
+-
+-        assertEquals("old-hash", user.getMotDePasse());
+-        assertEquals("pending-code-hash", user.getCodeReinitialisation());
+-        verify(utilisateurRepository, never()).save(user);
+-    }
+-
+-    @Test
+-    void resetCodeIsEmailedAndOnlyItsHashIsStored() {
+-        Utilisateur user = Utilisateur.builder()
+-                .nom("Voyageur").prenom("Ada").email("ada@example.com")
+-                .role(Utilisateur.Role.VOYAGEUR).build();
+-        when(utilisateurRepository.findByEmailIgnoreCase("ada@example.com")).thenReturn(Optional.of(user));
+-        when(emailService.envoyerCodeReinitialisation(eq("ada@example.com"), eq("Ada"), anyString()))
+-                .thenReturn(true);
+-        when(passwordEncoder.encode(anyString())).thenAnswer(call -> "hash:" + call.getArgument(0));
+-
+-        authService.genererNouveauCode(" ada@example.com ");
+-
+-        ArgumentCaptor<String> code = ArgumentCaptor.forClass(String.class);
+-        verify(emailService).envoyerCodeReinitialisation(eq("ada@example.com"), eq("Ada"), code.capture());
+-        org.junit.jupiter.api.Assertions.assertTrue(code.getValue().matches("\\d{6}"));
+-        assertEquals("hash:" + code.getValue(), user.getCodeReinitialisation());
+-        org.junit.jupiter.api.Assertions.assertTrue(
+-                user.getCodeReinitialisationExpiration().isAfter(java.time.OffsetDateTime.now()));
+-    }
+-
+-    @Test
+-    void resetCodeDeliveryFailureLeavesNoActiveCode() {
+-        Utilisateur user = Utilisateur.builder()
+-                .nom("Voyageur").prenom("Ada").email("ada@example.com")
+-                .role(Utilisateur.Role.VOYAGEUR)
+-                .codeReinitialisation("old-hash")
+-                .codeReinitialisationExpiration(java.time.OffsetDateTime.now().plusMinutes(10))
+-                .build();
+-        when(utilisateurRepository.findByEmailIgnoreCase("ada@example.com")).thenReturn(Optional.of(user));
+-        when(emailService.envoyerCodeReinitialisation(eq("ada@example.com"), eq("Ada"), anyString()))
+-                .thenReturn(false);
+-
+-        authService.genererNouveauCode("ada@example.com");
+-
+-        assertNull(user.getCodeReinitialisation());
+-        assertNull(user.getCodeReinitialisationExpiration());
+-        verify(utilisateurRepository, org.mockito.Mockito.times(1)).save(user);
+-    }
+-
+-    @Test
+-    void resetCodeRequestForUnknownAddressDoesNotSendMail() {
+-        when(utilisateurRepository.findByEmailIgnoreCase("unknown@example.com")).thenReturn(Optional.empty());
+-
+-        authService.genererNouveauCode("unknown@example.com");
+-
+-        verify(emailService, never()).envoyerCodeReinitialisation(anyString(), anyString(), anyString());
+-    }
+-
+-    @Test
+-    void expiredResetCodeIsRejected() {
+-        Utilisateur user = Utilisateur.builder()
+-                .email("ada@example.com").role(Utilisateur.Role.VOYAGEUR)
+-                .codeReinitialisation("hash:123456")
+-                .codeReinitialisationExpiration(java.time.OffsetDateTime.now().minusMinutes(1))
+-                .build();
+-        when(utilisateurRepository.findByEmailIgnoreCase("ada@example.com")).thenReturn(Optional.of(user));
+-
+-        org.junit.jupiter.api.Assertions.assertThrows(mg.manao.backend.exception.ApiException.class,
+-                () -> authService.reinitialiserMotDePasse("ada@example.com", "123456", "newpass"));
+-        verify(passwordEncoder, never()).matches(anyString(), anyString());
+-    }
+-
+-    @Test
+-    void resetCodeCannotBeUsedTwice() {
+-        Utilisateur user = Utilisateur.builder()
+-                .email("ada@example.com").role(Utilisateur.Role.VOYAGEUR)
+-                .codeReinitialisation("hash:123456")
+-                .codeReinitialisationExpiration(java.time.OffsetDateTime.now().plusMinutes(10))
+-                .build();
+-        when(utilisateurRepository.findByEmailIgnoreCase("ada@example.com")).thenReturn(Optional.of(user));
+-        when(passwordEncoder.matches("123456", "hash:123456")).thenReturn(true);
+-        when(passwordEncoder.encode("newpass")).thenReturn("new-password-hash");
+-
+-        authService.reinitialiserMotDePasse("ada@example.com", "123456", "newpass");
+-
+-        assertEquals("new-password-hash", user.getMotDePasse());
+-        assertNull(user.getCodeReinitialisation());
+-        assertNull(user.getCodeReinitialisationExpiration());
+-        org.junit.jupiter.api.Assertions.assertThrows(mg.manao.backend.exception.ApiException.class,
+-                () -> authService.reinitialiserMotDePasse("ada@example.com", "123456", "newpass"));
+-    }
+-}

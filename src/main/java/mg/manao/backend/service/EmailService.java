@@ -1,11 +1,8 @@
 package mg.manao.backend.service;
 
 import mg.manao.backend.entity.Reservation;
-import mg.manao.backend.entity.Utilisateur;
-import mg.manao.backend.entity.Voyage;
 import jakarta.mail.AuthenticationFailedException;
 import jakarta.mail.MessagingException;
-import jakarta.mail.internet.MimeMessage;
 import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.MailSendException;
 import org.slf4j.Logger;
@@ -14,15 +11,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
-import org.springframework.mail.javamail.MimeMessageHelper;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import javax.net.ssl.SSLException;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -32,11 +26,17 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Envoi du rappel de voyage par e-mail (Gmail SMTP via spring-boot-starter-mail).
+ * E-mails de l'application : UNIQUEMENT le code de reinitialisation du mot de passe.
+ * (Pas d'e-mail de verification a l'inscription, de confirmation de reservation ni de
+ * rappel de voyage : les rappels passent par WhatsApp.)
  *
- * Tant que EMAIL_ENABLED=false (ou que le username/mot de passe sont vides), ce
- * service se contente de logguer un avertissement et NE FAIT JAMAIS échouer l'appelant,
- * sur le même principe que WhatsAppService.
+ * Deux canaux d'envoi, choisis explicitement (jamais de bascule silencieuse) :
+ *  - GMAIL_API_ENABLED=true  -> API Gmail en HTTPS (indispensable sur Render Free,
+ *                               qui bloque SMTP 25/465/587) ; EMAIL_ENABLED n'est pas consulte ;
+ *  - sinon                   -> SMTP (spring-boot-starter-mail), soumis a EMAIL_ENABLED
+ *                               et a GMAIL_USERNAME / GMAIL_APP_PASSWORD, comme avant.
+ *
+ * Aucun secret et jamais le code de reinitialisation dans les logs.
  */
 @Service
 public class EmailService {
@@ -44,16 +44,16 @@ public class EmailService {
     private static final Logger log = LoggerFactory.getLogger(EmailService.class);
     private static final int MAX_DIAGNOSTIC_CAUSES = 12;
 
-    /** « ada@example.com » -> « a***@example.com » : les logs ne doivent pas contenir d'adresses complètes. */
+    /** « ada@example.com » -> « a***@example.com » : les logs ne doivent pas contenir d'adresses completes. */
     static String masquerEmail(String email) {
         if (email == null || email.isBlank()) return "-";
         int at = email.indexOf('@');
         if (at <= 0) return "***";
         return email.charAt(0) + "***" + email.substring(at);
     }
-    private static final DateTimeFormatter HEURE_FMT = DateTimeFormatter.ofPattern("HH:mm");
 
     private final JavaMailSender mailSender;
+    private final GmailApiSender gmailApi;
 
     @Value("${app.email.enabled:false}")
     private boolean enabled;
@@ -70,18 +70,32 @@ public class EmailService {
     public record EmailDiagnostic(boolean succes, String message) {
     }
 
-    public EmailService(JavaMailSender mailSender) {
+    public EmailService(JavaMailSender mailSender, GmailApiSender gmailApi) {
         this.mailSender = mailSender;
+        this.gmailApi = gmailApi;
     }
 
+    private boolean smtpConfigure() {
+        return enabled && username != null && !username.isBlank()
+                && password != null && !password.isBlank();
+    }
+
+    // ------------------------------------------------------------ diagnostics
+
     public EmailDiagnostic diagnostiquerConnexion() {
+        if (gmailApi.isEnabled()) {
+            GmailApiSender.Resultat r = gmailApi.verifierJeton();
+            if (!r.succes()) log.warn("Echec du diagnostic Gmail API : {}", r.detail());
+            return r.succes()
+                    ? new EmailDiagnostic(true, "Gmail API : jeton d'acces obtenu.")
+                    : new EmailDiagnostic(false, "Gmail API : connexion impossible.");
+        }
         if (!enabled) {
             return new EmailDiagnostic(false, "L'envoi d'e-mails est désactivé.");
         }
         if (username == null || username.isBlank() || password == null || password.isBlank()) {
             return new EmailDiagnostic(false, "La configuration SMTP est incomplète.");
         }
-
         try {
             if (mailSender instanceof JavaMailSenderImpl sender) {
                 sender.testConnection();
@@ -98,10 +112,17 @@ public class EmailService {
         if (destinataire == null || destinataire.isBlank()) {
             return new EmailDiagnostic(false, "Le destinataire est obligatoire.");
         }
-        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
+        if (gmailApi.isEnabled()) {
+            GmailApiSender.Resultat r = gmailApi.envoyer(destinataire, "E-mail de test MANAO",
+                    "Cet e-mail confirme que l'envoi par l'API Gmail de MANAO fonctionne.");
+            if (!r.succes()) log.warn("Échec de l'e-mail de test Gmail API à {} : {}", masquerEmail(destinataire), r.detail());
+            return r.succes()
+                    ? new EmailDiagnostic(true, "E-mail de test envoyé.")
+                    : new EmailDiagnostic(false, "E-mail de test non envoyé.");
+        }
+        if (!smtpConfigure()) {
             return new EmailDiagnostic(false, "La configuration SMTP est incomplète.");
         }
-
         try {
             SimpleMailMessage message = new SimpleMailMessage();
             message.setFrom(from == null || from.isBlank() ? username : from);
@@ -111,180 +132,89 @@ public class EmailService {
             mailSender.send(message);
             return new EmailDiagnostic(true, "E-mail de test envoyé.");
         } catch (Exception e) {
-            log.warn("Échec de l'envoi de l'e-mail de test à {} : {}", masquerEmail(destinataire), e.getClass().getSimpleName());
+            log.warn("Échec de l'envoi de l'e-mail de test à {} : {}", masquerEmail(destinataire), diagnosticSmtpCause(e));
             return new EmailDiagnostic(false, "E-mail de test non envoyé.");
         }
     }
 
-    @Async("notificationExecutor")
+    // ------------------------------------------- e-mails supprimes (no-op)
+
+    /** @deprecated Decision metier : plus de rappel par e-mail (WhatsApp uniquement). Ne fait rien. */
+    @Deprecated
     public void envoyerRappelVoyage(Reservation reservation) {
-        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
-            log.warn("Email non configuré (app.email.enabled=false ou GMAIL_USERNAME/GMAIL_APP_PASSWORD manquants) "
-                    + "-> rappel non envoyé pour la réservation {}.", reservation.getId());
-            return;
-        }
-
-        Utilisateur voyageur = reservation.getUtilisateur();
-        Voyage voyage = reservation.getVoyage();
-
-        String emailDestinataire = voyageur.getEmail();
-        if (emailDestinataire == null || emailDestinataire.isBlank()) {
-            log.warn("Adresse e-mail absente pour l'utilisateur {} -> rappel non envoyé (réservation {}).",
-                    voyageur.getId(), reservation.getId());
-            return;
-        }
-
-        long minutesRestantes = java.time.Duration.between(
-                java.time.LocalDateTime.now(java.time.ZoneId.of("Indian/Antananarivo")),
-                java.time.LocalDateTime.of(voyage.getDateDepart(), voyage.getHeureDepart())
-        ).toMinutes();
-
-        String texte = String.format(
-                "Bonjour %s,%n%n"
-                + "Votre voyage vers %s est prévu à %s.%n"
-                + "Votre départ est prévu dans %d minutes. Merci de vous présenter à l'avance.%n%n"
-                + "Bonne route !",
-                nvl(voyageur.getPrenom()), nvl(voyage.getVilleArrivee()),
-                voyage.getHeureDepart().format(HEURE_FMT), Math.max(minutesRestantes, 0)
-        );
-
-        try {
-            SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom(from == null || from.isBlank() ? username : from);
-            message.setTo(emailDestinataire);
-            message.setSubject("🔔 Rappel de voyage");
-            message.setText(texte);
-            mailSender.send(message);
-            log.info("Rappel e-mail envoyé pour la réservation {} ({}).", reservation.getId(), masquerEmail(emailDestinataire));
-        } catch (Exception e) {
-            log.error("Échec de l'envoi du rappel e-mail pour la réservation {} : {}",
-                    reservation.getId(), diagnosticSmtpCause(e));
-        }
+        log.debug("Rappel e-mail desactive (rappels via WhatsApp uniquement).");
     }
 
-    @Async("notificationExecutor")
+    /** @deprecated Decision metier : plus de confirmation de reservation par e-mail. Ne fait rien. */
+    @Deprecated
     public void envoyerConfirmationReservation(Reservation reservation) {
-        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
-            log.warn("Email non configuré (app.email.enabled=false ou GMAIL_USERNAME/GMAIL_APP_PASSWORD manquants) "
-                    + "-> confirmation non envoyée pour la réservation {}.", reservation.getId());
-            return;
-        }
-
-        Utilisateur voyageur = reservation.getUtilisateur();
-        Voyage voyage = reservation.getVoyage();
-
-        String emailDestinataire = voyageur.getEmail();
-        if (emailDestinataire == null || emailDestinataire.isBlank()) {
-            log.warn("Adresse e-mail absente pour l'utilisateur {} -> confirmation non envoyée (réservation {}).",
-                    voyageur.getId(), reservation.getId());
-            return;
-        }
-
-        String texte = String.format(
-                "Bonjour %s,%n%n"
-                + "Votre réservation a été validée !%n%n"
-                + "Trajet : %s -> %s%n"
-                + "Date : %s%n"
-                + "Heure de départ : %s%n"
-                + "Place N° : %s%n%n"
-                + "Merci de votre confiance, bon voyage !",
-                nvl(voyageur.getPrenom()), nvl(voyage.getVilleDepart()), nvl(voyage.getVilleArrivee()),
-                voyage.getDateDepart(), voyage.getHeureDepart().format(HEURE_FMT),
-                reservation.getNumeroPlace() == null ? "-" : reservation.getNumeroPlace().toString()
-        );
-
-        try {
-            SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom(from == null || from.isBlank() ? username : from);
-            message.setTo(emailDestinataire);
-            message.setSubject("✅ Confirmation de votre réservation");
-            message.setText(texte);
-            mailSender.send(message);
-            log.info("Confirmation e-mail envoyée pour la réservation {} ({}).", reservation.getId(), masquerEmail(emailDestinataire));
-        } catch (Exception e) {
-            log.error("Échec de l'envoi de la confirmation e-mail pour la réservation {} : {}",
-                    reservation.getId(), diagnosticSmtpCause(e));
-        }
+        log.debug("Confirmation e-mail desactivee.");
     }
+
+    /** @deprecated Decision metier : pas de verification d'e-mail a l'inscription. Ne fait rien, renvoie false. */
+    @Deprecated
+    public boolean envoyerCodeVerification(String destinataire, String prenom, String code, String lienVerification) {
+        log.debug("Verification d'e-mail a l'inscription desactivee.");
+        return false;
+    }
+
+    // ------------------------------------------------ code de reinitialisation
 
     /**
-     * E-mail de vérification d'adresse (double opt-in — voir
-     * EmailVerificationService). Envoyé de façon SYNCHRONE (pas d'@Async) :
-     * contrairement aux rappels/confirmations de réservation, l'inscription
-     * doit pouvoir dire tout de suite à l'utilisateur "vérifiez votre
-     * boîte" plutôt que de répondre avec succès avant même de savoir si
-     * l'envoi a marché.
+     * Envoie le code de reinitialisation, de facon SYNCHRONE (AuthService ne stocke le hash
+     * que si l'envoi a reussi). Le code n'est jamais renvoye par HTTP ni ecrit dans les logs.
      *
-     * En HTML plutôt qu'en texte brut (contrairement aux autres méthodes de
-     * cette classe) : c'est la fiabilité la plus déterminante ici — un
-     * e-mail HTML correctement formé ne subit jamais le retour à la ligne
-     * intempestif qui, en texte brut, pouvait couper le lien ou tronquer le
-     * code selon le client mail. Une nouvelle tentative automatique est
-     * aussi effectuée en cas d'échec SMTP passager (Gmail peut timeout
-     * ponctuellement sans que ce soit un vrai problème de configuration).
-     *
-     * @return true si l'e-mail a été transmis avec succès au serveur SMTP.
+     * @return true seulement si le fournisseur a accepte le message.
      */
-    public boolean envoyerCodeVerification(String destinataire, String prenom, String code, String lienVerification) {
-        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
-            log.warn("Email non configuré (app.email.enabled=false ou GMAIL_USERNAME/GMAIL_APP_PASSWORD manquants) "
-                    + "-> code de vérification non envoyé à {}.", masquerEmail(destinataire));
+    public boolean envoyerCodeReinitialisation(String destinataire, String prenom, String code) {
+        String texte = String.format(
+                "Bonjour %s,%n%nVotre code de reinitialisation est : %s%n%n"
+                        + "Il est valable 30 minutes et ne peut etre utilise qu'une seule fois. "
+                        + "Si vous n'etes pas a l'origine de cette demande, ignorez cet e-mail.",
+                nvl(prenom), code);
+
+        if (gmailApi.isEnabled()) {
+            return envoyerParGmailApi(destinataire, texte);
+        }
+        if (!smtpConfigure()) {
+            log.warn("Email non configure -> reset code not sent.");
             return false;
         }
-
-        String html = String.format(
-                "<div style=\"font-family:Arial,Helvetica,sans-serif;color:#1e293b;max-width:480px;margin:auto;\">"
-                + "<p>Bonjour %s,</p>"
-                + "<p>Merci de votre inscription ! Pour confirmer que cette adresse e-mail vous appartient bien, "
-                + "utilisez le code suivant :</p>"
-                + "<div style=\"font-size:32px;font-weight:700;letter-spacing:8px;text-align:center;"
-                + "background:#f1f5f9;border-radius:10px;padding:18px 0;margin:20px 0;color:#0f172a;\">%s</div>"
-                + "<p style=\"text-align:center;\">"
-                + "<a href=\"%s\" style=\"display:inline-block;background:#059669;color:#ffffff;"
-                + "text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:600;\">"
-                + "Vérifier mon adresse</a></p>"
-                + "<p style=\"font-size:13px;color:#64748b;\">Ce code est valable 30 minutes. "
-                + "Si vous n'êtes pas à l'origine de cette inscription, ignorez simplement cet e-mail.</p>"
-                + "</div>",
-                nvl(prenom), code, lienVerification
-        );
-        String texteBrut = String.format(
-                "Bonjour %s,%n%n"
-                + "Merci de votre inscription ! Votre code de vérification est : %s%n%n"
-                + "Ou cliquez sur ce lien : %s%n%n"
-                + "Ce code est valable 30 minutes.",
-                nvl(prenom), code, lienVerification
-        );
-
-        return envoyerAvecNouvellesTentatives(destinataire, () -> {
-            MimeMessage mime = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(mime, true, "UTF-8");
-            helper.setFrom(from == null || from.isBlank() ? username : from);
-            helper.setTo(destinataire);
-            helper.setSubject("Votre code de vérification : " + code);
-            helper.setText(texteBrut, html);
-            mailSender.send(mime);
-        });
+        return envoyerParSmtp(destinataire, texte);
     }
 
-    /**
-     * Une nouvelle tentative après un court délai en cas d'échec SMTP
-     * passager (timeout, connexion refusée momentanément...) — évite qu'une
-     * simple lenteur réseau ponctuelle empêche l'inscription d'aboutir.
-     */
-    private boolean envoyerAvecNouvellesTentatives(String destinataire, EnvoiMail envoi) {
+    private boolean envoyerParGmailApi(String destinataire, String texte) {
+        if (!gmailApi.isConfigured()) {
+            log.error("Gmail API activee mais incomplete (variables manquantes : {}) -> code non envoye.",
+                    gmailApi.variablesManquantes());
+            return false;
+        }
+        GmailApiSender.Resultat r = gmailApi.envoyer(destinataire, "Votre code de reinitialisation", texte);
+        if (r.succes()) {
+            log.info("Code de reinitialisation envoye via Gmail API a {} ({}).", masquerEmail(destinataire), r.detail());
+            return true;
+        }
+        log.error("Echec definitif de l'envoi Gmail API a {} : {}", masquerEmail(destinataire), r.detail());
+        return false;
+    }
+
+    private boolean envoyerParSmtp(String destinataire, String texte) {
         final int tentativesMax = 2;
         for (int tentative = 1; tentative <= tentativesMax; tentative++) {
             try {
-                envoi.executer();
+                SimpleMailMessage message = new SimpleMailMessage();
+                message.setFrom(from == null || from.isBlank() ? username : from);
+                message.setTo(destinataire);
+                message.setSubject("Votre code de reinitialisation");
+                message.setText(texte);
+                mailSender.send(message);
                 log.info("E-mail envoyé à {} (tentative {}/{}).", masquerEmail(destinataire), tentative, tentativesMax);
                 return true;
             } catch (Exception e) {
                 log.warn("Tentative {}/{} d'envoi à {} échouée : {}",
                         tentative, tentativesMax, masquerEmail(destinataire), diagnosticSmtpCause(e));
                 if (tentative == tentativesMax) {
-                    log.error("Échec définitif de l'envoi à {} : {}",
-                            masquerEmail(destinataire), diagnosticSmtpCause(e));
+                    log.error("Échec définitif de l'envoi à {} : {}", masquerEmail(destinataire), diagnosticSmtpCause(e));
                     return false;
                 }
                 try {
@@ -297,6 +227,8 @@ public class EmailService {
         }
         return false;
     }
+
+    // ------------------------------------------------------------ diagnostic
 
     static String diagnosticSmtpCause(Throwable failure) {
         if (failure == null) return "cause unavailable";
@@ -346,33 +278,5 @@ public class EmailService {
         return null;
     }
 
-    @FunctionalInterface
-    private interface EnvoiMail {
-        void executer() throws Exception;
-    }
-
     private String nvl(String s) { return s == null ? "-" : s; }
-
-    /**
-     * Sends a reset code synchronously. The code is never returned over HTTP.
-     */
-    public boolean envoyerCodeReinitialisation(String destinataire, String prenom, String code) {
-        if (!enabled || username == null || username.isBlank() || password == null || password.isBlank()) {
-            log.warn("Email non configure -> reset code not sent.");
-            return false;
-        }
-        String texte = String.format(
-                "Bonjour %s,%n%nVotre code de reinitialisation est : %s%n%n"
-                        + "Il est valable 30 minutes et ne peut etre utilise qu'une seule fois. "
-                        + "Si vous n'etes pas a l'origine de cette demande, ignorez cet e-mail.",
-                nvl(prenom), code);
-        return envoyerAvecNouvellesTentatives(destinataire, () -> {
-            SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom(from == null || from.isBlank() ? username : from);
-            message.setTo(destinataire);
-            message.setSubject("Votre code de reinitialisation");
-            message.setText(texte);
-            mailSender.send(message);
-        });
-    }
 }
