@@ -119,6 +119,18 @@ public class ReservationController {
         return reservationService.updateStatut(id, req, current.getId());
     }
 
+    /** VOYAGEUR : annulation de sa réservation en attente uniquement, sans paiement associé. */
+    @PostMapping("/{id}/annuler")
+    public ResponseEntity<Void> cancelByTraveler(@PathVariable UUID id) {
+        SecurityUserDetails current = CurrentUser.get();
+        if (current == null) throw ApiException.unauthorized("Non authentifié.");
+        if (current.getRole() != Utilisateur.Role.VOYAGEUR) {
+            throw ApiException.forbidden("Cette opération est réservée au voyageur.");
+        }
+        reservationService.cancelByTraveler(id, current.getId());
+        return ResponseEntity.noContent().build();
+    }
+
     /** ADMIN uniquement (voir SecurityConfig). */
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable UUID id) {

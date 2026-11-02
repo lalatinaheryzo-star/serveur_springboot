@@ -143,7 +143,7 @@ public class ReservationService {
 
     @Transactional
     public ReservationDTO updateStatut(UUID id, UpdateReservationStatutRequest req, UUID presidentId) {
-        Reservation r = reservationRepository.findByIdForPresidentWithDetails(id, presidentId)
+        Reservation r = reservationRepository.findByIdForPresidentForUpdate(id, presidentId)
                 .orElseThrow(() -> ApiException.forbidden("Cette réservation n'appartient pas à votre coopérative."));
         String statut = req.getStatut() == null ? "" : req.getStatut().trim();
         if (!TRANSITIONS.containsKey(statut)) {
@@ -177,6 +177,11 @@ public class ReservationService {
         }
 
         return toDto(saved);
+    }
+
+    @Transactional
+    public void cancelByTraveler(UUID id, UUID travelerId) {
+        placeService.annulerReservationVoyageur(id, travelerId);
     }
 
     @Transactional

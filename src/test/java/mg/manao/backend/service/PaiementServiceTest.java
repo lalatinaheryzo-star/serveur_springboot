@@ -45,7 +45,7 @@ class PaiementServiceTest {
                 .prix(new BigDecimal("25000")).build();
         reservation = Reservation.builder().id(UUID.randomUUID()).voyage(voyage)
                 .statut(Reservation.STATUT_VALIDEE).build();
-        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
         when(paiementRepository.findByReservationId(reservation.getId())).thenReturn(Optional.empty());
         when(paiementRepository.save(any(Paiement.class))).thenAnswer(i -> {
             Paiement p = i.getArgument(0);

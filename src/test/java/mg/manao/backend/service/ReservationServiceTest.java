@@ -49,7 +49,7 @@ class ReservationServiceTest {
         place = Place.builder().id(UUID.randomUUID()).voyage(voyage).numeroPlace(4).statut("reservee").build();
         reservation = Reservation.builder().id(UUID.randomUUID()).voyage(voyage).place(place)
                 .numeroPlace(4).statut(Reservation.STATUT_EN_ATTENTE).build();
-        when(reservationRepository.findByIdForPresidentWithDetails(reservation.getId(), presidentId))
+        when(reservationRepository.findByIdForPresidentForUpdate(reservation.getId(), presidentId))
                 .thenReturn(Optional.of(reservation));
         when(reservationRepository.save(any(Reservation.class))).thenAnswer(i -> i.getArgument(0));
     }

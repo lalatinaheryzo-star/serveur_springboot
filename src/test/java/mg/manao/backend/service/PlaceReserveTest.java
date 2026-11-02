@@ -2,6 +2,7 @@ package mg.manao.backend.service;
 
 import mg.manao.backend.entity.*;
 import mg.manao.backend.exception.ApiException;
+import mg.manao.backend.repository.PaiementRepository;
 import mg.manao.backend.repository.PlaceRepository;
 import mg.manao.backend.repository.ReservationRepository;
 import mg.manao.backend.repository.UtilisateurRepository;
@@ -38,7 +39,8 @@ class PlaceReserveTest {
         placeRepository = mock(PlaceRepository.class);
         reservationRepository = mock(ReservationRepository.class);
         utilisateurRepository = mock(UtilisateurRepository.class);
-        service = new PlaceService(placeRepository, reservationRepository, utilisateurRepository, mock(VoyageService.class));
+        service = new PlaceService(placeRepository, reservationRepository, mock(PaiementRepository.class),
+                utilisateurRepository, mock(VoyageService.class));
 
         voyage = Voyage.builder().id(UUID.randomUUID()).statut("actif")
                 .dateDepart(LocalDate.now(ZoneId.of("Indian/Antananarivo")).plusDays(2))

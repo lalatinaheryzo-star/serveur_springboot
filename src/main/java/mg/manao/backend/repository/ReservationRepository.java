@@ -2,7 +2,10 @@ package mg.manao.backend.repository;
 
 import mg.manao.backend.entity.Reservation;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.repository.query.Param;
 
+import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -41,6 +44,10 @@ public interface ReservationRepository extends JpaRepository<Reservation, UUID> 
 
     Optional<Reservation> findByPlaceId(UUID placeId);
 
+    @org.springframework.data.jpa.repository.Query("SELECT r FROM Reservation r WHERE r.id = :id")
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<Reservation> findByIdForUpdate(@Param("id") UUID id);
+
     /**
      * Réservations ACTIVES (non annulées / non refusées) liées à une place. Une même place a pu être
      * liée à plusieurs réservations au fil du temps (annulation puis nouvelle réservation) :
@@ -58,6 +65,13 @@ public interface ReservationRepository extends JpaRepository<Reservation, UUID> 
         + "LEFT JOIN FETCH r.place "
         + "WHERE r.id = :id AND c.president.id = :presidentId")
     Optional<Reservation> findByIdForPresidentWithDetails(UUID id, UUID presidentId);
+
+    @org.springframework.data.jpa.repository.Query(
+        "SELECT r FROM Reservation r JOIN r.voyage v "
+        + "WHERE r.id = :id AND v.cooperative.president.id = :presidentId")
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<Reservation> findByIdForPresidentForUpdate(
+            @Param("id") UUID id, @Param("presidentId") UUID presidentId);
 
     /** Utilisé par DashboardService : un simple COUNT SQL, sans charger les lignes ni leurs relations. */
     long countByStatut(String statut);

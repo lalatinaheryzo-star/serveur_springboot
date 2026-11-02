@@ -7,6 +7,7 @@ import mg.manao.backend.entity.Reservation;
 import mg.manao.backend.entity.Utilisateur;
 import mg.manao.backend.entity.Voyage;
 import mg.manao.backend.exception.ApiException;
+import mg.manao.backend.repository.PaiementRepository;
 import mg.manao.backend.repository.PlaceRepository;
 import mg.manao.backend.repository.ReservationRepository;
 import mg.manao.backend.repository.UtilisateurRepository;
@@ -29,6 +30,7 @@ public class PlaceService {
 
     private final PlaceRepository placeRepository;
     private final ReservationRepository reservationRepository;
+    private final PaiementRepository paiementRepository;
     private final UtilisateurRepository utilisateurRepository;
     private final VoyageService voyageService;
 
@@ -110,12 +112,24 @@ public class PlaceService {
      */
     @Transactional
     public void libererPlace(UUID placeId, UUID utilisateurId, Utilisateur.Role role) {
+        if (role == Utilisateur.Role.VOYAGEUR) {
+            Reservation reservation = reservationRepository
+                    .findByPlaceIdAndStatutIn(placeId, STATUTS_ACTIFS).stream().findFirst()
+                    .orElseThrow(() -> ApiException.forbidden("Vous n'êtes pas autorisé à libérer cette place."));
+            if (!Reservation.STATUT_EN_ATTENTE.equals(reservation.getStatut())) {
+                throw ApiException.forbidden(
+                        "Cette réservation est déjà traitée : contactez la coopérative pour l'annuler.");
+            }
+            annulerReservationVoyageur(reservation.getId(), utilisateurId);
+            return;
+        }
+
         Place place = placeRepository.findByIdForUpdate(placeId)
                 .orElseThrow(() -> ApiException.notFound("Place introuvable."));
 
         Optional<Reservation> reservation = reservationRepository
                 .findByPlaceIdAndStatutIn(placeId, STATUTS_ACTIFS).stream().findFirst();
-        verifierDroitDeLiberer(place, reservation.orElse(null), utilisateurId, role);
+        verifierDroitDeLiberer(place, utilisateurId, role);
 
         if (reservation.isPresent()) {
             Reservation r = reservation.get();
@@ -127,6 +141,31 @@ public class PlaceService {
             placeRepository.save(place);
             rouvrirVoyageSiComplet(place);
         }
+    }
+
+    @Transactional
+    public void annulerReservationVoyageur(UUID reservationId, UUID utilisateurId) {
+        Reservation reservation = reservationRepository.findByIdForUpdate(reservationId)
+                .orElseThrow(() -> ApiException.notFound("Réservation introuvable."));
+        if (reservation.getUtilisateur() == null
+                || !reservation.getUtilisateur().getId().equals(utilisateurId)) {
+            throw ApiException.forbidden("Vous ne pouvez annuler que votre propre réservation.");
+        }
+        if (!Reservation.STATUT_EN_ATTENTE.equals(reservation.getStatut())) {
+            throw ApiException.conflict(
+                    "Seule une réservation en attente peut être annulée par le voyageur.");
+        }
+        if (reservation.getPlace() == null) {
+            throw ApiException.conflict("La place de cette réservation n'est plus disponible.");
+        }
+        if (paiementRepository.findByReservationId(reservationId).isPresent()) {
+            throw ApiException.conflict(
+                    "Un paiement est associé à cette réservation. Contactez la coopérative avant toute annulation.");
+        }
+
+        reservation.setStatut(Reservation.STATUT_ANNULEE);
+        rendrePlaceDisponible(reservation);
+        reservationRepository.save(reservation);
     }
 
     /**
@@ -155,17 +194,9 @@ public class PlaceService {
         }
     }
 
-    private void verifierDroitDeLiberer(Place place, Reservation reservation, UUID utilisateurId, Utilisateur.Role role) {
+    private void verifierDroitDeLiberer(Place place, UUID utilisateurId, Utilisateur.Role role) {
         if (role == Utilisateur.Role.ADMIN) return;
-        if (role == Utilisateur.Role.VOYAGEUR) {
-            if (reservation != null && reservation.getUtilisateur() != null
-                    && reservation.getUtilisateur().getId().equals(utilisateurId)) {
-                // Un voyageur n'annule que SA réservation encore « En attente » (annulation avant
-                // validation). Une réservation validée par le Président ne se libère plus seul.
-                if (Reservation.STATUT_EN_ATTENTE.equals(reservation.getStatut())) return;
-                throw ApiException.forbidden("Cette réservation est déjà traitée : contactez la coopérative pour l'annuler.");
-            }
-        } else if (role == Utilisateur.Role.PRESIDENT) {
+        if (role == Utilisateur.Role.PRESIDENT) {
             Voyage voyage = place.getVoyage();
             if (voyage != null && voyage.getCooperative() != null
                     && voyage.getCooperative().getPresident() != null

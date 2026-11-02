@@ -6,6 +6,7 @@ import mg.manao.backend.entity.Reservation;
 import mg.manao.backend.entity.Utilisateur;
 import mg.manao.backend.entity.Voyage;
 import mg.manao.backend.exception.ApiException;
+import mg.manao.backend.repository.PaiementRepository;
 import mg.manao.backend.repository.PlaceRepository;
 import mg.manao.backend.repository.ReservationRepository;
 import mg.manao.backend.repository.UtilisateurRepository;
@@ -31,6 +32,7 @@ class PlaceReleaseAccessTest {
 
     private PlaceRepository placeRepository;
     private ReservationRepository reservationRepository;
+    private PaiementRepository paiementRepository;
     private PlaceService service;
 
     private final UUID proprietaire = UUID.randomUUID();
@@ -46,7 +48,8 @@ class PlaceReleaseAccessTest {
     void setUp() {
         placeRepository = mock(PlaceRepository.class);
         reservationRepository = mock(ReservationRepository.class);
-        service = new PlaceService(placeRepository, reservationRepository,
+        paiementRepository = mock(PaiementRepository.class);
+        service = new PlaceService(placeRepository, reservationRepository, paiementRepository,
                 mock(UtilisateurRepository.class), mock(VoyageService.class));
 
         Utilisateur president = Utilisateur.builder().id(presidentDeLaCoop).build();
@@ -58,6 +61,8 @@ class PlaceReleaseAccessTest {
                 .place(place).statut(Reservation.STATUT_EN_ATTENTE).build();
 
         when(placeRepository.findByIdForUpdate(placeId)).thenReturn(Optional.of(place));
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(paiementRepository.findByReservationId(reservation.getId())).thenReturn(Optional.empty());
         when(reservationRepository.findByPlaceIdAndStatutIn(eq(placeId), any())).thenReturn(List.of(reservation));
     }
 
@@ -123,6 +128,22 @@ class PlaceReleaseAccessTest {
         assertEquals("reservee", place.getStatut());
         assertEquals(Reservation.STATUT_VALIDEE, reservation.getStatut());
         verify(placeRepository, never()).save(any());
+    }
+
+    @Test
+    void travelerCannotReleaseAReservationWithAnAssociatedPayment() {
+        when(paiementRepository.findByReservationId(reservation.getId()))
+                .thenReturn(Optional.of(mg.manao.backend.entity.Paiement.builder()
+                        .id(UUID.randomUUID()).reservation(reservation).build()));
+
+        ApiException e = assertThrows(ApiException.class,
+                () -> service.libererPlace(placeId, proprietaire, Utilisateur.Role.VOYAGEUR));
+
+        assertEquals(HttpStatus.CONFLICT, e.getStatus());
+        assertEquals(Reservation.STATUT_EN_ATTENTE, reservation.getStatut());
+        assertEquals("reservee", place.getStatut());
+        verify(placeRepository, never()).save(any());
+        verify(reservationRepository, never()).save(any());
     }
 
     @Test

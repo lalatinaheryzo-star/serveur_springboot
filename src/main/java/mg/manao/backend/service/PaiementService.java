@@ -108,7 +108,7 @@ public class PaiementService {
         if (req.getReservationId() == null || req.getReservationId().isBlank()) {
             throw ApiException.badRequest("reservation_id requis.");
         }
-        Reservation reservation = reservationRepository.findById(UUID.fromString(req.getReservationId()))
+        Reservation reservation = reservationRepository.findByIdForUpdate(UUID.fromString(req.getReservationId()))
                 .orElseThrow(() -> ApiException.notFound("Réservation introuvable."));
 
         if (Reservation.STATUT_REFUSEE.equals(reservation.getStatut())

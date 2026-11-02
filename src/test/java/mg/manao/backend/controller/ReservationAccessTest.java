@@ -83,6 +83,30 @@ class ReservationAccessTest {
     }
 
     @Test
+    void voyageurCanRequestCancellationOfAReservation() {
+        loginAs(voyageurA, Utilisateur.Role.VOYAGEUR);
+        UUID reservationId = UUID.randomUUID();
+
+        controller.cancelByTraveler(reservationId);
+
+        verify(reservationService).cancelByTraveler(reservationId, voyageurA);
+    }
+
+    @Test
+    void adminAndPresidentCannotUseTheTravelerCancellationRoute() {
+        UUID reservationId = UUID.randomUUID();
+        for (Utilisateur.Role role : List.of(Utilisateur.Role.ADMIN, Utilisateur.Role.PRESIDENT)) {
+            loginAs(presidentId, role);
+
+            ApiException error = assertThrows(ApiException.class,
+                    () -> controller.cancelByTraveler(reservationId));
+
+            assertEquals(HttpStatus.FORBIDDEN, error.getStatus());
+        }
+        verify(reservationService, never()).cancelByTraveler(any(), any());
+    }
+
+    @Test
     void presidentCannotUseUtilisateurIdToReadOutsideHisCooperative() {
         loginAs(presidentId, Utilisateur.Role.PRESIDENT);
         Cooperative coop = Cooperative.builder().id(coopId).build();
